@@ -1,0 +1,27 @@
+# HG changeset patch
+# Date 1359974815 -3600
+# Parent 09762162c8d3b6ea7f18490285a67b6c4c6ef6a0
+# User Philipp Wagner <mail@philipp-wagner.com>
+
+diff --git a/b2g/chrome/content/shell.xul b/b2g/chrome/content/shell.xul
+--- a/b2g/chrome/content/shell.xul
++++ b/b2g/chrome/content/shell.xul
+@@ -5,17 +5,17 @@
+    - You can obtain one at http://mozilla.org/MPL/2.0/.  -->
+ 
+ <window xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
+         id="shell"
+         windowtype="navigator:browser"
+ #ifdef ANDROID
+         sizemode="fullscreen"
+ #endif
+-        style="background: black; overflow: hidden; width:320px; height:480px"
++        style="background: black; overflow: hidden; width:1280px; height:1024px"
+         onunload="shell.stop();">
+ 
+   <script type="application/javascript" src="chrome://browser/content/settings.js"/>
+   <script type="application/javascript" src="chrome://browser/content/shell.js"/>
+ 
+ #ifndef MOZ_WIDGET_GONK
+   <!-- this script handles the screen argument for desktop builds -->
+   <script type="application/javascript" src="chrome://browser/content/screen.js"/>

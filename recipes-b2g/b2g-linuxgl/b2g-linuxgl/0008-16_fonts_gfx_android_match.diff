@@ -1,0 +1,395 @@
+# HG changeset patch
+# Date 1359974772 -3600
+# User Philipp Wagner <mail@philipp-wagner.com>
+# Parent 488092d0046ba6fec330413650ee9fb61711ec6d
+Bug 731498 - LinuxGL port
+
+diff --git a/dom/ipc/ContentParent.cpp b/dom/ipc/ContentParent.cpp
+--- a/dom/ipc/ContentParent.cpp
++++ b/dom/ipc/ContentParent.cpp
+@@ -79,16 +79,18 @@
+ #include "SandboxHal.h"
+ #include "StructuredCloneUtils.h"
+ #include "TabParent.h"
+ #include "URIUtils.h"
+ #include "nsGeolocation.h"
+ 
+ #ifdef ANDROID
+ # include "gfxAndroidPlatform.h"
++#elif defined(MOZ_WIDGET_LINUXGL)
++# include "gfxLinuxGLPlatform.h"
+ #endif
+ 
+ #ifdef MOZ_CRASHREPORTER
+ # include "nsExceptionHandler.h"
+ # include "nsICrashReporter.h"
+ #endif
+ 
+ #ifdef MOZ_PERMISSIONS
+@@ -878,16 +880,18 @@ ContentParent::RecvReadPrefsArray(Infall
+     return true;
+ }
+ 
+ bool
+ ContentParent::RecvReadFontList(InfallibleTArray<FontListEntry>* retValue)
+ {
+ #ifdef ANDROID
+     gfxAndroidPlatform::GetPlatform()->GetFontList(retValue);
++#elif defined(MOZ_WIDGET_LINUXGL)
++    gfxLinuxGLPlatform::GetPlatform()->GetFontList(retValue);
+ #endif
+     return true;
+ }
+ 
+ bool
+ ContentParent::RecvReadPermissions(InfallibleTArray<IPC::Permission>* aPermissions)
+ {
+ #ifdef MOZ_PERMISSIONS
+diff --git a/gfx/thebes/gfxFT2FontList.cpp b/gfx/thebes/gfxFT2FontList.cpp
+--- a/gfx/thebes/gfxFT2FontList.cpp
++++ b/gfx/thebes/gfxFT2FontList.cpp
+@@ -17,20 +17,27 @@
+ #define gfxToolkitPlatform gfxWindowsPlatform
+ #elif defined(ANDROID)
+ #include "mozilla/dom/ContentChild.h"
+ #include "gfxAndroidPlatform.h"
+ #include "mozilla/Omnijar.h"
+ #include "nsIInputStream.h"
+ #include "nsNetUtil.h"
+ #define gfxToolkitPlatform gfxAndroidPlatform
++#elif defined(MOZ_WIDGET_LINUXGL)
++#include "mozilla/dom/ContentChild.h"
++#include "gfxLinuxGLPlatform.h"
++#include "mozilla/Omnijar.h"
++#include "nsIInputStream.h"
++#include "nsNetUtil.h"
++#define gfxToolkitPlatform gfxLinuxGLPlatform
+ #endif
+ 
++#include "nsXULAppAPI.h"
+ #ifdef ANDROID
+-#include "nsXULAppAPI.h"
+ #include <dirent.h>
+ #include <android/log.h>
+ #define ALOG(args...)  __android_log_print(ANDROID_LOG_INFO, "Gecko" , ## args)
+ #endif
+ 
+ #include "ft2build.h"
+ #include FT_FREETYPE_H
+ #include FT_TRUETYPE_TAGS_H
+@@ -143,17 +150,17 @@ FT2FontEntry::CreateScaledFont(const gfx
+     return scaledFont;
+ }
+ 
+ FT2FontEntry::~FT2FontEntry()
+ {
+     // Do nothing for mFTFace here since FTFontDestroyFunc is called by cairo.
+     mFTFace = nullptr;
+ 
+-#ifndef ANDROID
++#if !defined(ANDROID) && !defined(MOZ_WIDGET_LINUXGL)
+     if (mFontFace) {
+         cairo_font_face_destroy(mFontFace);
+         mFontFace = nullptr;
+     }
+ #endif
+ }
+ 
+ gfxFont*
+@@ -779,16 +786,18 @@ gfxFT2FontList::AppendFacesFromFontFile(
+         AppendFacesFromCachedFaceList(aFileName, aStdFile, faceList);
+         return;
+     }
+ 
+ #ifdef XP_WIN
+     FT_Library ftLibrary = gfxWindowsPlatform::GetPlatform()->GetFTLibrary();
+ #elif defined(ANDROID)
+     FT_Library ftLibrary = gfxAndroidPlatform::GetPlatform()->GetFTLibrary();
++#elif defined(MOZ_WIDGET_LINUXGL)
++    FT_Library ftLibrary = gfxLinuxGLPlatform::GetPlatform()->GetFTLibrary();
+ #endif
+     FT_Face dummy;
+     if (FT_Err_Ok == FT_New_Face(ftLibrary, aFileName.get(), -1, &dummy)) {
+         LOG(("reading font info via FreeType for %s", aFileName.get()));
+         nsCString faceList;
+         timestamp = s.st_mtime;
+         filesize = s.st_size;
+         for (FT_Long i = 0; i < dummy->num_faces; i++) {
+@@ -1101,16 +1110,69 @@ gfxFT2FontList::FindFonts()
+             FindFontsInDir(localPath, &fnc);
+         }
+     }
+ 
+     // Finalize the families by sorting faces into standard order
+     // and marking "simple" families.
+     // Passing non-null userData here says that we want faces to be sorted.
+     mFontFamilies.Enumerate(FinalizeFamilyMemberList, this);
++#elif defined(MOZ_WIDGET_LINUXGL)
++    gfxFontCache *fc = gfxFontCache::GetCache();
++    if (fc)
++        fc->AgeAllGenerations();
++    mPrefFonts.Clear();
++    mCodepointsWithNoFonts.reset();
++
++    mCodepointsWithNoFonts.SetRange(0,0x1f);     // C0 controls
++    mCodepointsWithNoFonts.SetRange(0x7f,0x9f);  // C1 controls
++
++    if (XRE_GetProcessType() != GeckoProcessType_Default) {
++        // Content process: ask the Chrome process to give us the list
++        InfallibleTArray<FontListEntry> fonts;
++        mozilla::dom::ContentChild::GetSingleton()->SendReadFontList(&fonts);
++        for (PRUint32 i = 0, n = fonts.Length(); i < n; ++i) {
++            AppendFaceFromFontListEntry(fonts[i], false);
++        }
++        // Passing null for userdata tells Finalize that it does not need
++        // to sort faces (because they were already sorted by chrome,
++        // so we just maintain the existing order)
++        mFontFamilies.Enumerate(FinalizeFamilyMemberList, nullptr);
++        LOG(("got font list from chrome process: %d faces in %d families",
++            fonts.Length(), mFontFamilies.Count()));
++        return;
++    }
++
++    // Chrome process: get the cached list (if any)
++    FontNameCache fnc;
++
++    FcPattern *pat = NULL;
++    FcObjectSet *os = NULL;
++    FcFontSet *fs = NULL;
++    pat = FcPatternCreate();
++    os = FcObjectSetBuild(FC_FAMILY, FC_FILE, FC_INDEX, FC_WEIGHT, FC_SLANT, FC_WIDTH, NULL);
++    fs = FcFontList(NULL, pat, os);
++    for (int i = 0; i < fs->nfont; i++) {
++        char *file;
++        if (FcPatternGetString(fs->fonts[i], FC_FILE, 0, (FcChar8 **) &file) != FcResultMatch)
++            continue;
++        nsCString s(file);
++        AppendFacesFromFontFile(s, false, &fnc);
++    }
++    if (pat)
++        FcPatternDestroy(pat);
++    if (os)
++        FcObjectSetDestroy(os);
++    if (fs)
++        FcFontSetDestroy(fs);
++
++    // Finalize the families by sorting faces into standard order
++    // and marking "simple" families.
++    // Passing non-null userData here says that we want faces to be sorted.
++    mFontFamilies.Enumerate(FinalizeFamilyMemberList, this);
+ #endif // XP_WIN && ANDROID
+ }
+ 
+ #ifdef ANDROID
+ void
+ gfxFT2FontList::FindFontsInDir(const nsCString& aDir, FontNameCache *aFNC)
+ {
+     static const char* sStandardFonts[] = {
+@@ -1285,16 +1347,22 @@ gfxFT2FontList::GetDefaultFont(const gfx
+         }
+     }
+ #elif defined(ANDROID)
+     nsAutoString resolvedName;
+     if (ResolveFontName(NS_LITERAL_STRING("Roboto"), resolvedName) ||
+         ResolveFontName(NS_LITERAL_STRING("Droid Sans"), resolvedName)) {
+         return FindFamily(resolvedName);
+     }
++#elif defined(MOZ_WIDGET_LINUXGL)
++    nsAutoString resolvedName;
++    if (ResolveFontName(NS_LITERAL_STRING("Serif"), resolvedName) ||
++        ResolveFontName(NS_LITERAL_STRING("DejaVu Sans"), resolvedName)) {
++        return FindFamily(resolvedName);
++    }
+ #endif
+     /* TODO: what about Qt or other platforms that may use this? */
+     return nullptr;
+ }
+ 
+ gfxFontEntry*
+ gfxFT2FontList::MakePlatformFont(const gfxProxyFontEntry *aProxyEntry,
+                                  const uint8_t *aFontData,
+diff --git a/gfx/thebes/gfxFT2Fonts.cpp b/gfx/thebes/gfxFT2Fonts.cpp
+--- a/gfx/thebes/gfxFT2Fonts.cpp
++++ b/gfx/thebes/gfxFT2Fonts.cpp
+@@ -11,16 +11,19 @@
+ #include "gfxQtPlatform.h"
+ #define gfxToolkitPlatform gfxQtPlatform
+ #elif defined(XP_WIN)
+ #include "gfxWindowsPlatform.h"
+ #define gfxToolkitPlatform gfxWindowsPlatform
+ #elif defined(ANDROID)
+ #include "gfxAndroidPlatform.h"
+ #define gfxToolkitPlatform gfxAndroidPlatform
++#elif defined(MOZ_WIDGET_LINUXGL)
++#include "gfxLinuxGLPlatform.h"
++#define gfxToolkitPlatform gfxLinuxGLPlatform
+ #endif
+ 
+ #include "gfxTypes.h"
+ #include "gfxFT2Fonts.h"
+ #include "gfxFT2FontBase.h"
+ #include "gfxFT2Utils.h"
+ #include "gfxFT2FontList.h"
+ #include <locale.h>
+@@ -51,17 +54,17 @@ GetFontLog()
+ // rounding and truncation functions for a Freetype floating point number
+ // (FT26Dot6) stored in a 32bit integer with high 26 bits for the integer
+ // part and low 6 bits for the fractional part.
+ #define MOZ_FT_ROUND(x) (((x) + 32) & ~63) // 63 = 2^6 - 1
+ #define MOZ_FT_TRUNC(x) ((x) >> 6)
+ #define CONVERT_DESIGN_UNITS_TO_PIXELS(v, s) \
+         MOZ_FT_TRUNC(MOZ_FT_ROUND(FT_MulFix((v) , (s))))
+ 
+-#ifndef ANDROID // not needed on Android, we use the generic gfxFontGroup
++#if !defined(ANDROID) && !defined(MOZ_WIDGET_LINUXGL) // not needed on Android, we use the generic gfxFontGroup
+ /**
+  * gfxFT2FontGroup
+  */
+ 
+ bool
+ gfxFT2FontGroup::FontCallback(const nsAString& fontName,
+                               const nsACString& genericName,
+                               bool aUseFontSet,
+@@ -116,16 +119,19 @@ gfxFT2FontGroup::gfxFT2FontGroup(const n
+ #elif defined(XP_WIN)
+         HGDIOBJ hGDI = ::GetStockObject(SYSTEM_FONT);
+         LOGFONTW logFont;
+         if (hGDI && ::GetObjectW(hGDI, sizeof(logFont), &logFont))
+             familyArray.AppendElement(nsDependentString(logFont.lfFaceName));
+ #elif defined(ANDROID)
+         familyArray.AppendElement(NS_LITERAL_STRING("Droid Sans"));
+         familyArray.AppendElement(NS_LITERAL_STRING("Roboto"));
++#elif defined(MOZ_WIDGET_LINUXGL)
++        familyArray.AppendElement(NS_LITERAL_STRING("DejaVu Sans"));
++        familyArray.AppendElement(NS_LITERAL_STRING("DejaVu Serif"));
+ #else
+ #error "Platform not supported"
+ #endif
+     }
+ 
+     for (uint32_t i = 0; i < familyArray.Length(); i++) {
+         nsRefPtr<gfxFT2Font> font = gfxFT2Font::GetOrMakeFont(familyArray[i], &mStyle);
+         if (font) {
+@@ -371,17 +377,17 @@ gfxFT2FontGroup::WhichPrefFontSupportsCh
+     }
+ 
+     return nullptr;
+ }
+ 
+ already_AddRefed<gfxFont>
+ gfxFT2FontGroup::WhichSystemFontSupportsChar(uint32_t aCh, int32_t aRunScript)
+ {
+-#if defined(XP_WIN) || defined(ANDROID)
++#if defined(XP_WIN) || defined(ANDROID) || defined(MOZ_WIDGET_LINUXGL)
+     FontEntry *fe = static_cast<FontEntry*>
+         (gfxPlatformFontList::PlatformFontList()->
+             SystemFindFontForChar(aCh, aRunScript, &mStyle));
+     if (fe) {
+         nsRefPtr<gfxFT2Font> f = gfxFT2Font::GetOrMakeFont(fe, &mStyle);
+         nsRefPtr<gfxFont> font = f.get();
+         return font.forget();
+     }
+@@ -564,17 +570,17 @@ gfxFT2Font::CairoFontFace()
+  * Look up the font in the gfxFont cache. If we don't find it, create one.
+  * In either case, add a ref, append it to the aFonts array, and return it ---
+  * except for OOM in which case we do nothing and return null.
+  */
+ already_AddRefed<gfxFT2Font>
+ gfxFT2Font::GetOrMakeFont(const nsAString& aName, const gfxFontStyle *aStyle,
+                           bool aNeedsBold)
+ {
+-#ifdef ANDROID
++#if defined(ANDROID) || defined(MOZ_WIDGET_LINUXGL)
+     FT2FontEntry *fe = static_cast<FT2FontEntry*>
+         (gfxPlatformFontList::PlatformFontList()->
+             FindFontForFamily(aName, aStyle, aNeedsBold));
+ #else
+     FT2FontEntry *fe = static_cast<FT2FontEntry*>
+         (gfxToolkitPlatform::GetPlatform()->FindFontEntry(aName, *aStyle));
+ #endif
+     if (!fe) {
+diff --git a/gfx/thebes/gfxFT2Fonts.h b/gfx/thebes/gfxFT2Fonts.h
+--- a/gfx/thebes/gfxFT2Fonts.h
++++ b/gfx/thebes/gfxFT2Fonts.h
+@@ -78,17 +78,17 @@ protected:
+ 
+     void AddRange(gfxShapedWord *aShapedWord, const PRUnichar *str);
+ 
+     typedef nsBaseHashtableET<nsUint32HashKey, CachedGlyphData> CharGlyphMapEntryType;
+     typedef nsTHashtable<CharGlyphMapEntryType> CharGlyphMap;
+     CharGlyphMap mCharGlyphCache;
+ };
+ 
+-#ifndef ANDROID // not needed on Android, uses the standard gfxFontGroup directly
++#if !defined(ANDROID) && !defined(MOZ_WIDGET_LINUXGL) // not needed on Android, uses the standard gfxFontGroup directly
+ class THEBES_API gfxFT2FontGroup : public gfxFontGroup {
+ public: // new functions
+     gfxFT2FontGroup (const nsAString& families,
+                     const gfxFontStyle *aStyle,
+                     gfxUserFontSet *aUserFontSet);
+     virtual ~gfxFT2FontGroup ();
+ 
+ protected: // from gfxFontGroup
+diff --git a/gfx/thebes/gfxFont.cpp b/gfx/thebes/gfxFont.cpp
+--- a/gfx/thebes/gfxFont.cpp
++++ b/gfx/thebes/gfxFont.cpp
+@@ -3145,17 +3145,17 @@ gfxFontGroup::gfxFontGroup(const nsAStri
+     BuildFontList();
+ }
+ 
+ void
+ gfxFontGroup::BuildFontList()
+ {
+ // "#if" to be removed once all platforms are moved to gfxPlatformFontList interface
+ // and subclasses of gfxFontGroup eliminated
+-#if defined(XP_MACOSX) || defined(XP_WIN) || defined(ANDROID)
++#if defined(XP_MACOSX) || defined(XP_WIN) || defined(ANDROID) || defined(MOZ_WIDGET_LINUXGL)
+     ForEachFont(FindPlatformFont, this);
+ 
+     if (mFonts.Length() == 0) {
+         bool needsBold;
+         gfxPlatformFontList *pfl = gfxPlatformFontList::PlatformFontList();
+         gfxFontFamily *defaultFamily = pfl->GetDefaultFont(&mStyle);
+         NS_ASSERTION(defaultFamily,
+                      "invalid default font returned by GetDefaultFont");
+@@ -4106,17 +4106,17 @@ gfxFontGroup::UpdateFontList()
+ {
+     if (mUserFontSet && mCurrGeneration != GetGeneration()) {
+         // xxx - can probably improve this to detect when all fonts were found, so no need to update list
+         mFonts.Clear();
+         mUnderlineOffset = UNDERLINE_OFFSET_NOT_SET;
+         mSkipDrawing = false;
+ 
+         // bug 548184 - need to clean up FT2, OS/2 platform code to use BuildFontList
+-#if defined(XP_MACOSX) || defined(XP_WIN) || defined(ANDROID)
++#if defined(XP_MACOSX) || defined(XP_WIN) || defined(ANDROID) || defined(MOZ_WIDGET_LINUXGL)
+         BuildFontList();
+ #else
+         ForEachFont(FindPlatformFont, this);
+ #endif
+         mCurrGeneration = GetGeneration();
+     }
+ }
+ 
+diff --git a/gfx/thebes/gfxPlatform.cpp b/gfx/thebes/gfxPlatform.cpp
+--- a/gfx/thebes/gfxPlatform.cpp
++++ b/gfx/thebes/gfxPlatform.cpp
+@@ -330,17 +330,17 @@ gfxPlatform::Init()
+ #endif
+ 
+ #ifdef DEBUG
+     mozilla::gl::GLContext::StaticInit();
+ #endif
+ 
+     nsresult rv;
+ 
+-#if defined(XP_MACOSX) || defined(XP_WIN) || defined(ANDROID) // temporary, until this is implemented on others
++#if defined(XP_MACOSX) || defined(XP_WIN) || defined(ANDROID) || defined(MOZ_WIDGET_LINUXGL) // temporary, until this is implemented on others
+     rv = gfxPlatformFontList::Init();
+     if (NS_FAILED(rv)) {
+         NS_RUNTIMEABORT("Could not initialize gfxPlatformFontList");
+     }
+ #endif
+ 
+     gPlatform->mScreenReferenceSurface =
+         gPlatform->CreateOffscreenSurface(gfxIntSize(1,1),

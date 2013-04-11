@@ -1,0 +1,73 @@
+# HG changeset patch
+# Date 1359974744 -3600
+# User Philipp Wagner <mail@philipp-wagner.com>
+# Parent d4d01894ac65ae9ec9555ee6c8be01565e61155d
+Bug 731498 - LinuxGL port
+
+diff --git a/dom/plugins/ipc/PluginInstanceChild.cpp b/dom/plugins/ipc/PluginInstanceChild.cpp
+--- a/dom/plugins/ipc/PluginInstanceChild.cpp
++++ b/dom/plugins/ipc/PluginInstanceChild.cpp
+@@ -1237,16 +1237,18 @@ PluginInstanceChild::AnswerNPP_SetWindow
+ 
+     if (mPluginIface->setwindow)
+         (void) mPluginIface->setwindow(&mData, &mWindow);
+ 
+ #elif defined(ANDROID)
+     // TODO: Need Android impl
+ #elif defined(MOZ_WIDGET_QT)
+     // TODO: Need QT-nonX impl
++#elif defined(MOZ_WIDGET_LINUXGL)
++    // TODO: Need LinuxGL impl
+ #else
+ #  error Implement me for your OS
+ #endif
+ 
+     return true;
+ }
+ 
+ bool
+diff --git a/dom/plugins/ipc/PluginInstanceParent.cpp b/dom/plugins/ipc/PluginInstanceParent.cpp
+--- a/dom/plugins/ipc/PluginInstanceParent.cpp
++++ b/dom/plugins/ipc/PluginInstanceParent.cpp
+@@ -201,16 +201,19 @@ PluginInstanceParent::AnswerNPN_GetValue
+ #elif defined(XP_MACOSX)
+     intptr_t id;
+ #elif defined(ANDROID)
+     // TODO: Need Android impl
+     int id;
+ #elif defined(MOZ_WIDGET_QT)
+     // TODO: Need Qt non X impl
+     int id;
++#elif defined(MOZ_WIDGET_LINUXGL)
++    // TODO: Need LinuxGL impl
++    int id;
+ #else
+ #warning Implement me
+ #endif
+ 
+     *result = mNPNIface->getvalue(mNPP, NPNVnetscapeWindow, &id);
+     *value = id;
+     return true;
+ }
+diff --git a/dom/plugins/ipc/PluginMessageUtils.h b/dom/plugins/ipc/PluginMessageUtils.h
+--- a/dom/plugins/ipc/PluginMessageUtils.h
++++ b/dom/plugins/ipc/PluginMessageUtils.h
+@@ -111,17 +111,17 @@ struct NPRemoteWindow
+   double contentsScaleFactor;
+ #endif
+ };
+ 
+ #ifdef XP_WIN
+ typedef HWND NativeWindowHandle;
+ #elif defined(MOZ_X11)
+ typedef XID NativeWindowHandle;
+-#elif defined(XP_MACOSX) || defined(ANDROID) || defined(MOZ_WIDGET_QT)
++#elif defined(XP_MACOSX) || defined(ANDROID) || defined(MOZ_WIDGET_QT) || defined(MOZ_WIDGET_LINUXGL)
+ typedef intptr_t NativeWindowHandle; // never actually used, will always be 0
+ #else
+ #error Need NativeWindowHandle for this platform
+ #endif
+ 
+ #ifdef XP_WIN
+ typedef base::SharedMemoryHandle WindowsSharedMemoryHandle;
+ typedef HANDLE DXGISharedSurfaceHandle;

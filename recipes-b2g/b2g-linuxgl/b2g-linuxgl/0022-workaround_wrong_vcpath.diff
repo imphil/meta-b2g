@@ -1,0 +1,24 @@
+# HG changeset patch
+# Date 1359985488 -3600
+# Parent 6cabfe0e85f5f2c6db176c9e2caedd1a94a9e9db
+# User Philipp Wagner <mail@philipp-wagner.com>
+
+diff --git a/widget/linuxgl/Makefile.in b/widget/linuxgl/Makefile.in
+--- a/widget/linuxgl/Makefile.in
++++ b/widget/linuxgl/Makefile.in
+@@ -51,13 +51,14 @@ DEFINES += -D_IMPL_NS_WIDGET -DHAVE_OFF6
+ LOCAL_INCLUDES += \
+ 	-I$(topsrcdir)/widget/xpwidgets \
+ 	-I$(topsrcdir)/widget/shared \
+ 	-I$(topsrcdir)/dom/system/android \
+ 	-I$(topsrcdir)/content/events/src \
+ 	-I$(topsrcdir)/gfx/skia/include/core \
+ 	-I$(topsrcdir)/gfx/skia/include/config \
+ 	-I$(srcdir) \
+-	-I/opt/vc/include/interface/vcos/pthreads \
++	-I=/usr/include/interface/vcos/pthreads \
++	-I=/usr/include/interface/vmcs_host/linux \
+ 	$(NULL)
+ 
+ 
+ include $(topsrcdir)/ipc/chromium/chromium-config.mk

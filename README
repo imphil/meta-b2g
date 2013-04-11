@@ -1,0 +1,15 @@
+This layer depends on:
+
+URI: git://git.yoctoproject.org/poky
+branch: master
+revision: HEAD
+
+URI: git://git.openembedded.net/meta-openembedded
+branch: master
+revision: HEAD
+
+URI: git://git.yoctoproject.org/meta-raspberrypi
+branch: master
+revision: HEAD
+
+Layer maintainer: Philipp Wagner <mail@philipp-wagner.com>

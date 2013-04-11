@@ -1,0 +1,27 @@
+# HG changeset patch
+# Date 1359974831 -3600
+# Parent 2ccff333ab71f214d91dd7fdbab9e287f5ad2460
+# User Philipp Wagner <mail@philipp-wagner.com>
+
+diff --git a/gfx/thebes/gfxLinuxGLPlatform.cpp b/gfx/thebes/gfxLinuxGLPlatform.cpp
+--- a/gfx/thebes/gfxLinuxGLPlatform.cpp
++++ b/gfx/thebes/gfxLinuxGLPlatform.cpp
+@@ -30,18 +30,16 @@ using namespace mozilla;
+ using namespace mozilla::dom;
+ using namespace mozilla::gfx;
+ 
+ static FT_Library gPlatformFTLibrary = NULL;
+ #ifdef MOZ_X11
+ static Display* sCachedPlatformDisplay = NULL;
+ #endif
+ 
+-#define LOG(args...)  __android_log_print(ANDROID_LOG_INFO, "GeckoFonts" , ## args)
+-
+ static int64_t sFreetypeMemoryUsed;
+ static FT_MemoryRec_ sFreetypeMemoryRecord;
+ 
+ static int64_t
+ GetFreetypeSize()
+ {
+     return sFreetypeMemoryUsed;
+ }

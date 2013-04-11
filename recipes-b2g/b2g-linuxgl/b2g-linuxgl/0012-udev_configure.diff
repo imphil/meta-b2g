@@ -1,0 +1,38 @@
+# HG changeset patch
+# Date 1359974788 -3600
+# User Philipp Wagner <mail@philipp-wagner.com>
+# Parent 0d5dc4021ac506e9d8932f496da914394036220a
+
+diff --git a/configure.in b/configure.in
+--- a/configure.in
++++ b/configure.in
+@@ -5032,16 +5032,29 @@ then
+         AC_DEFINE(MOZ_ENABLE_GCONF)
+     fi
+ 
+     AC_SUBST(MOZ_ENABLE_GCONF)
+     AC_SUBST(MOZ_GCONF_CFLAGS)
+     AC_SUBST(MOZ_GCONF_LIBS)
+ fi
+ 
++if test "${MOZ_WIDGET_TOOLKIT}" = "linuxgl";
++then
++    PKG_CHECK_MODULES(MOZ_UDEV, [libudev],
++    [
++        TK_CFLAGS="$TK_CFLAGS $MOZ_UDEV_CFLAGS"
++        TK_LIBS="$TK_LIBS $MOZ_UDEV_LIBS"
++        AC_DEFINE(MOZ_UDEV)
++    ],
++    [
++        echo "udev library not found"
++    ])
++fi
++
+ dnl ========================================================
+ dnl = libproxy support
+ dnl ========================================================
+ 
+ if test "$MOZ_ENABLE_GTK2" -o "$MOZ_ENABLE_QT"
+ then
+     MOZ_ENABLE_LIBPROXY=
+ 

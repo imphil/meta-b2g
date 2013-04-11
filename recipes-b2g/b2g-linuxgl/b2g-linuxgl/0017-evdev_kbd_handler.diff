@@ -1,0 +1,467 @@
+# HG changeset patch
+# Date 1359974807 -3600
+# User Philipp Wagner <mail@philipp-wagner.com>
+# Parent 5ccfcd7e102055618d6c5a05fbb15dead5565d49
+Bug 731498 - LinuxGL port
+
+diff --git a/gfx/layers/opengl/LayerManagerOGL.cpp b/gfx/layers/opengl/LayerManagerOGL.cpp
+--- a/gfx/layers/opengl/LayerManagerOGL.cpp
++++ b/gfx/layers/opengl/LayerManagerOGL.cpp
+@@ -1534,17 +1534,18 @@ LayerManagerOGL::CreateFBOWithTexture(co
+     msg.Append("Framebuffer not complete -- error 0x");
+     msg.AppendInt(result, 16);
+     msg.Append(", mFBOTextureTarget 0x");
+     msg.AppendInt(mFBOTextureTarget, 16);
+     msg.Append(", aRect.width ");
+     msg.AppendInt(aRect.width);
+     msg.Append(", aRect.height ");
+     msg.AppendInt(aRect.height);
+-    NS_RUNTIMEABORT(msg.get());
++    msg.Append(", aRect.height \n");
++    printf(msg.get());
+   }
+ 
+   SetupPipeline(aRect.width, aRect.height, DontApplyWorldTransform);
+   mGLContext->fScissor(0, 0, aRect.width, aRect.height);
+ 
+   if (aInit == InitModeClear) {
+     mGLContext->fClearColor(0.0, 0.0, 0.0, 0.0);
+     mGLContext->fClear(LOCAL_GL_COLOR_BUFFER_BIT);
+diff --git a/widget/linuxgl/EvdevKeyMapping.h b/widget/linuxgl/EvdevKeyMapping.h
+new file mode 100644
+--- /dev/null
++++ b/widget/linuxgl/EvdevKeyMapping.h
+@@ -0,0 +1,91 @@
++/* Copyright 2012 Mozilla Foundation and Mozilla contributors
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at
++ *
++ *     http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ */
++
++#ifndef GONKKEYMAPPING_H
++#define GONKKEYMAPPING_H
++
++/* See libui/KeycodeLabels.h for the mapping */
++static const unsigned long kKeyMapping[] = {
++    0,
++    NS_VK_ESCAPE,
++    NS_VK_1,
++    NS_VK_2,
++    NS_VK_3,
++    NS_VK_4,
++    NS_VK_5,
++    NS_VK_6,
++    NS_VK_7,
++    NS_VK_8,
++    NS_VK_9,
++    NS_VK_0,
++    NS_VK_HYPHEN_MINUS,
++    NS_VK_EQUALS,
++    NS_VK_BACK,
++    NS_VK_TAB,
++    NS_VK_Q,
++    NS_VK_E,
++    NS_VK_R,
++    NS_VK_T,
++    NS_VK_Y,
++    NS_VK_U,
++    NS_VK_I,
++    NS_VK_O,
++    NS_VK_P,
++    0, //NS_VK_LEFTBRACE,
++    0, //NS_VK_RIGHTBRACE,
++    NS_VK_ENTER,
++    0, //NS_VK_LEFTCTRL,
++    NS_VK_A,
++    NS_VK_S,
++    NS_VK_D,
++    NS_VK_F,
++    NS_VK_G,
++    NS_VK_H,
++    NS_VK_J,
++    NS_VK_K,
++    NS_VK_L,
++    NS_VK_SEMICOLON,
++    0, //NS_VK_APOSTROPHE,
++    0, //NS_VK_GRAVE,
++    0, //NS_VK_LEFTSHIFT,
++    0, //NS_VK_BACKSLASH,
++    NS_VK_Z,
++    NS_VK_X,
++    NS_VK_C,
++    NS_VK_V,
++    NS_VK_B,
++    NS_VK_N,
++    NS_VK_M,
++    NS_VK_COMMA,
++    0, //NS_VK_DOT,
++    NS_VK_SLASH,
++    0, //NS_VK_RIGHTSHIFT,
++    0, //NS_VK_KPASTERISK,
++    0, //NS_VK_LEFTALT,
++    NS_VK_SPACE,
++    0, //NS_VK_CAPSLOCK,
++    NS_VK_F1,
++    NS_VK_F2,
++    NS_VK_F3,
++    NS_VK_F4,
++    NS_VK_F5,
++    NS_VK_F6,
++    NS_VK_F7,
++    NS_VK_F8,
++    NS_VK_F9,
++    NS_VK_F10,
++    // There are more but we don't map them
++};
++#endif /* GONKKEYMAPPING_H */
+diff --git a/widget/linuxgl/GeckoInputDispatcher.cpp b/widget/linuxgl/GeckoInputDispatcher.cpp
+--- a/widget/linuxgl/GeckoInputDispatcher.cpp
++++ b/widget/linuxgl/GeckoInputDispatcher.cpp
+@@ -39,31 +39,37 @@
+ 
+ #include "GeckoInputDispatcher.h"
+ 
+ #include <fcntl.h>
+ #include <unistd.h>
+ #include <errno.h>
+ #include <linux/input.h>
+ #include "nsWindow.h"
++#include "nsGUIEvent.h"
+ #include "gfxLinuxGLPlatform.h"
+ 
+ using namespace std;
++using namespace mozilla::widget;
+ 
+ namespace mozilla {
+ 
+ GeckoInputDispatcher::GeckoInputDispatcher(nsAppShell* aAppShell)
+   : mQueueLock("GeckoInputDispatcher::mQueueMutex")
+   , mAppShell(aAppShell)
+   , mMouseDev(-1)
++  , mKBDDev(-1)
+ {
+     mTimerStarted = false;
++    mKTimerStarted = false;
+     m_compression = true;
+     m_jitterLimitSquared = 9;
+     m_x = m_y = m_prevx = m_prevy = m_buttons = 0;
++    m_keycode = m_prevCode = 0;
++    m_keyvalue = m_prevValue = 0;
+     Init();
+ }
+ 
+ void GeckoInputDispatcher::Init()
+ {
+     nsresult rv;
+ #ifdef MOZ_X11
+     if (!getenv("NO_XEVENTS") && !getenv("OMTC")) {
+@@ -100,17 +106,72 @@ void GeckoInputDispatcher::Init()
+                 rv = mAppShell->AddFdHandler(mMouseDev, MouseGenericHandlerS, mMouseDevNode.get(), this);
+                 NS_ENSURE_SUCCESS(rv,);
+                 printf("Use usedv mouse: fd:%i\n", mMouseDev);
+             } else {
+                 printf("error: opening mouse device\n");
+                 mMouseDevNode.SetLength(0);
+             }
+         }
++        if (mKBDDev < 0) {
++            UdevDevicePath(UDev_Keyboard, mKBDDevNode);
++            if ((mKBDDev = open(mKBDDevNode.get(), O_RDONLY | O_NONBLOCK /*O_NDELAY*/ )) != -1) {
++                rv = mAppShell->AddFdHandler(mKBDDev, KBDGenericHandlerS, mKBDDevNode.get(), this);
++                NS_ENSURE_SUCCESS(rv,);
++                printf("Use usedv KBD: fd:%i\n", mKBDDev);
++            } else {
++                printf("error: opening KBD device\n");
++                mKBDDevNode.SetLength(0);
++            }
++        }
+ #endif // MOZ_UDEV
++
++    }
++}
++
++static nsEventStatus
++sendKeyEventWithMsg(uint32_t keyCode,
++                    uint32_t msg,
++                    uint64_t timeMs,
++                    const EventFlags& flags)
++{
++    nsKeyEvent event(true, msg, NULL);
++    event.keyCode = keyCode;
++    event.location = nsIDOMKeyEvent::DOM_KEY_LOCATION_MOBILE;
++    event.time = timeMs;
++    event.mFlags.Union(flags);
++    return nsWindow::DispatchInputEvent(event);
++}
++
++static void
++sendKeyEvent(uint32_t keyCode, bool down, uint64_t timeMs)
++{
++    EventFlags extraFlags;
++    nsEventStatus status =
++        sendKeyEventWithMsg(keyCode, down ? NS_KEY_DOWN : NS_KEY_UP, timeMs,
++                            extraFlags);
++    if (down) {
++        extraFlags.mDefaultPrevented =
++            (status == nsEventStatus_eConsumeNoDefault);
++        sendKeyEventWithMsg(keyCode, NS_KEY_PRESS, timeMs, extraFlags);
++    }
++}
++
++// Defines kKeyMapping
++#include "EvdevKeyMapping.h"
++
++static void
++maybeSendKeyEvent(int keyCode, bool pressed, uint64_t timeMs)
++{
++    if (keyCode < ArrayLength(kKeyMapping) && kKeyMapping[keyCode]) {
++        sendKeyEvent(kKeyMapping[keyCode], pressed, timeMs);
++    }
++    else {
++        printf("Got unknown key event code. type 0x%04x code 0x%04x value %d\n",
++                keyCode, pressed);
+     }
+ }
+ 
+ void GeckoInputDispatcher::dispatchOnce()
+ {
+     UserInputData data;
+     {
+         MutexAutoLock lock(mQueueLock);
+@@ -127,17 +188,19 @@ void GeckoInputDispatcher::dispatchOnce(
+         PRUint32 msg = data.action;
+         SendMouseEventS(msg,
+                         data.timeMs,
+                         data.motion.touches[0].x,
+                         data.motion.touches[0].y);
+         break;
+     }
+     case UserInputData::KEY_DATA:
+-        printf("Key Data event.type:%i\n", data.action);
++        maybeSendKeyEvent(data.key.keyCode,
++                          data.action == NS_KEY_DOWN,
++                          data.timeMs);
+         break;
+     }
+ }
+ 
+ void
+ GeckoInputDispatcher::PushUserData(UserInputData& data)
+ {
+     MutexAutoLock lock(mQueueLock);
+@@ -158,16 +221,18 @@ GeckoInputDispatcher::UdevDevicePath(int
+     udev_enumerate *ue = udev_enumerate_new(u);
+     udev_enumerate_add_match_subsystem(ue, "input");
+     if (type & UDev_Mouse)
+         udev_enumerate_add_match_property(ue, "ID_INPUT_MOUSE", "1");
+     if (type & UDev_Touchpad)
+         udev_enumerate_add_match_property(ue, "ID_INPUT_TOUCHPAD", "1");
+     if (type & UDev_Touchscreen)
+         udev_enumerate_add_match_property(ue, "ID_INPUT_TOUCHSCREEN", "1");
++    if (type & UDev_Keyboard)
++        udev_enumerate_add_match_property(ue, "ID_INPUT_KEYBOARD", "1");
+     udev_enumerate_scan_devices(ue);
+     udev_list_entry *entry;
+     udev_list_entry_foreach(entry, udev_enumerate_get_list_entry(ue)) {
+         const char *syspath = udev_list_entry_get_name(entry);
+         udev_device *udevice = udev_device_new_from_syspath(u, syspath);
+         const char* candidate1 = udev_device_get_devnode(udevice);
+         if (candidate1 && strstr(candidate1, "/dev/input/event")) {
+             aResult.Assign(candidate1);
+@@ -229,31 +294,60 @@ GeckoInputDispatcher::SendMouseEvent()
+     mAppShell->NotifyNativeEvent();
+ 
+     prev_mbuttons = m_buttons;
+     m_prevx = m_x;
+     m_prevy = m_y;
+     mTimerStarted = false;
+ }
+ 
++void
++GeckoInputDispatcher::SendKeyEvent()
++{
++    int key_code = m_keycode;
++    int key_value = m_keyvalue;
++    PRUint32 msg = key_value ? NS_KEY_UP : NS_KEY_DOWN;
++    UserInputData data;
++    data.type = UserInputData::KEY_DATA;
++    data.action = msg;
++    data.timeMs = last_evtime.tv_usec;
++    data.key.keyCode = key_code;
++    PushUserData(data);
++    mAppShell->NotifyNativeEvent();
++
++    m_prevCode = m_keycode;
++    m_prevValue = m_keyvalue;
++    mKTimerStarted = false;
++}
++
+ void GeckoInputDispatcher::DispatchMotionToMainThread()
+ {
+     if (!mTimerStarted) {
+         nsCOMPtr<nsIRunnable> event =
+           NS_NewRunnableMethod(this, &GeckoInputDispatcher::SendMouseEvent);
+         NS_DispatchToMainThread(event);
+         mTimerStarted = true;
+     }
+ }
+ 
++void GeckoInputDispatcher::DispatchKeyToMainThread()
++{
++    if (!mKTimerStarted) {
++        nsCOMPtr<nsIRunnable> event =
++          NS_NewRunnableMethod(this, &GeckoInputDispatcher::SendKeyEvent);
++        NS_DispatchToMainThread(event);
++        mKTimerStarted = true;
++    }
++}
++
+ void
+ GeckoInputDispatcher::MouseGenericHandlerS(int fd, FdHandler *data)
+ {
+     if (data->data) {
+-      static_cast<GeckoInputDispatcher*>(data->data)->MouseGenericHandler(fd);
++        static_cast<GeckoInputDispatcher*>(data->data)->MouseGenericHandler(fd);
+     }
+ }
+ 
+ void
+ GeckoInputDispatcher::MouseGenericHandler(int fd)
+ {
+     struct ::input_event buffer[32];
+     int n = 0;
+@@ -344,16 +438,58 @@ GeckoInputDispatcher::MouseGenericHandle
+     if (m_compression && pendingMouseEvent) {
+         int distanceSquared = (m_x - m_prevx)*(m_x - m_prevx) + (m_y - m_prevy)*(m_y - m_prevy);
+         if (distanceSquared > m_jitterLimitSquared) {
+             DispatchMotionToMainThread();
+         }
+     }
+ }
+ 
++void
++GeckoInputDispatcher::KBDGenericHandlerS(int fd, FdHandler *data)
++{
++    if (data->data) {
++      static_cast<GeckoInputDispatcher*>(data->data)->KBDGenericHandler(fd);
++    }
++}
++
++void
++GeckoInputDispatcher::KBDGenericHandler(int fd)
++{
++    struct ::input_event buffer[32];
++    int n = 0;
++    bool posChanged = false;
++    bool pendingMouseEvent = false;
++    int eventCompressCount = 0;
++
++    while (1 == 1) {
++        n = read(fd, reinterpret_cast<char *>(buffer) + n, sizeof(buffer) - n);
++        if (n == 0) {
++            printf("Got EOF from the input device.\n");
++            return;
++        } else if (n < 0 && (errno != EINTR && errno != EAGAIN)) {
++            printf("Could not read from input device: %s\n", strerror(errno));
++            return;
++        } else if (n % sizeof(buffer[0]) == 0) {
++            break;
++        }
++    }
++
++    n /= sizeof(buffer[0]);
++
++    for (int i = 0; i < n; ++i) {
++        if (buffer[i].type != EV_KEY)
++            continue;
++
++        m_keycode = buffer[i].code;
++        m_keyvalue = buffer[i].value;
++        DispatchKeyToMainThread();
++    }
++}
++
+ #ifdef MOZ_X11
+ void
+ GeckoInputDispatcher::x11HandleEvent(int fd, FdHandler* udata)
+ {
+     Display* mDpy = gfxLinuxGLPlatform::GetXDisplay();
+ 
+     GeckoInputDispatcher* self = static_cast<GeckoInputDispatcher*>(udata->data);
+     if (!self) {
+diff --git a/widget/linuxgl/GeckoInputDispatcher.h b/widget/linuxgl/GeckoInputDispatcher.h
+--- a/widget/linuxgl/GeckoInputDispatcher.h
++++ b/widget/linuxgl/GeckoInputDispatcher.h
+@@ -44,17 +44,18 @@
+ 
+ #ifdef MOZ_UDEV
+ extern "C" {
+ #include <libudev.h>
+ }
+ enum MUDeviceType {
+     UDev_Mouse = 0x01,
+     UDev_Touchpad = 0x02,
+-    UDev_Touchscreen = 0x04
++    UDev_Touchscreen = 0x04,
++    UDev_Keyboard = 0x08
+ };
+ #endif
+ 
+ namespace mozilla {
+ 
+ struct Touch {
+     int32_t id;
+     int x;
+@@ -94,20 +95,24 @@ public:
+     virtual ~GeckoInputDispatcher() {}
+     static bool UdevDevicePath(int type, nsCString& aResult);
+     void Painted();
+ 
+ private:
+     void Init();
+     static void MouseGenericHandlerS(int fd, FdHandler *data);
+     void MouseGenericHandler(int fd);
++    static void KBDGenericHandlerS(int fd, FdHandler *data);
++    void KBDGenericHandler(int fd);
+     static void x11HandleEvent(int fd, FdHandler*);
+     inline void DispatchMotionToMainThread();
++    inline void DispatchKeyToMainThread();
+     void SendMouseEvent();
+     void SendMouseEventS(PRUint32 msg, uint64_t timeMs, int x, int y);
++    void SendKeyEvent();
+ 
+     // mQueueLock should generally be locked while using mEventQueue.
+     // UserInputData is pushed on on the InputReaderThread and
+     // popped and dispatched on the main thread.
+     mozilla::Mutex mQueueLock;
+     nsAppShell* mAppShell;
+     int mMouseDev;
+     nsCString mMouseDevNode;
+@@ -115,11 +120,18 @@ private:
+     int m_x;
+     int m_y;
+     struct timeval last_evtime;
+     int m_prevx, m_prevy;
+     int m_buttons;
+     bool m_compression;
+     int m_jitterLimitSquared;
+     bool mTimerStarted;
++    int mKBDDev;
++    unsigned int m_keycode;
++    int m_keyvalue;
++    unsigned int m_prevCode;
++    int m_prevValue;
++    nsCString mKBDDevNode;
++    bool mKTimerStarted;
+ };
+ 
+ } // namespace mozilla

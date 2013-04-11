@@ -1,0 +1,31 @@
+# HG changeset patch
+# Date 1359974776 -3600
+# User Philipp Wagner <mail@philipp-wagner.com>
+# Parent 5e2bcdeb8f6c87008a19b189bfbe5a383880d59a
+Bug 731498 - LinuxGL port
+
+diff --git a/configure.in b/configure.in
+--- a/configure.in
++++ b/configure.in
+@@ -4624,16 +4624,21 @@ cairo-gonk)
+ cairo-linuxgl)
+     AC_DEFINE(MOZ_WIDGET_LINUXGL)
+     AC_DEFINE(MOZ_TOUCH)
+     MOZ_WIDGET_TOOLKIT=linuxgl
+     MOZ_WEBGL=1
+     MOZ_PDF_PRINTING=1
+     MOZ_TOUCH=1
+     USE_FC_FREETYPE=1
++    if test -z "$WITHOUT_X11"; then
++        MOZ_X11=1
++        AC_DEFINE(MOZ_X11)
++        XT_LIBS=
++    fi
+     ;;
+ 
+ esac
+ 
+ AC_SUBST(MOZ_OLD_LINKER)
+ AC_SUBST(MOZ_PDF_PRINTING)
+ if test "$MOZ_PDF_PRINTING"; then
+    PDF_SURFACE_FEATURE="#define CAIRO_HAS_PDF_SURFACE 1"

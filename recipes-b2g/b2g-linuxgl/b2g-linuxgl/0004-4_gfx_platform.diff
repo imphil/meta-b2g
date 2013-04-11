@@ -1,0 +1,587 @@
+# HG changeset patch
+# Date 1359974749 -3600
+# User Philipp Wagner <mail@philipp-wagner.com>
+# Parent b5f3a6f0dab9d8872476cb46a455314fee1a56a5
+Bug 731498 - LinuxGL port
+
+diff --git a/gfx/2d/Makefile.in b/gfx/2d/Makefile.in
+--- a/gfx/2d/Makefile.in
++++ b/gfx/2d/Makefile.in
+@@ -90,17 +90,17 @@ ifeq (cocoa,$(MOZ_WIDGET_TOOLKIT))
+ ifdef MOZ_ENABLE_SKIA
+ CPPSRCS += \
+         ScaledFontMac.cpp \
+         $(NULL)
+ 
+ endif
+ endif
+ 
+-ifeq ($(MOZ_WIDGET_TOOLKIT),$(findstring $(MOZ_WIDGET_TOOLKIT),android gtk2 gonk qt))
++ifeq ($(MOZ_WIDGET_TOOLKIT),$(findstring $(MOZ_WIDGET_TOOLKIT),android gtk2 gonk qt linuxgl))
+ CPPSRCS	+= \
+         ScaledFontFreetype.cpp \
+         $(NULL)
+ DEFINES += -DMOZ_ENABLE_FREETYPE
+ endif
+ 
+ ifeq (android,$(MOZ_WIDGET_TOOLKIT))
+ DEFINES += -DSK_BUILD_FOR_ANDROID_NDK
+diff --git a/gfx/cairo/cairo/src/Makefile.in b/gfx/cairo/cairo/src/Makefile.in
+--- a/gfx/cairo/cairo/src/Makefile.in
++++ b/gfx/cairo/cairo/src/Makefile.in
+@@ -167,17 +167,17 @@ CPPSRCS += cairo-beos-surface.cpp
+ EXPORTS_cairo += cairo-beos.h
+ endif
+ 
+ ifeq ($(MOZ_WIDGET_TOOLKIT),gtk2)
+ CSRCS   += $(PSPDF_BASE_CSRCS) $(PDF_CSRCS) $(PS_CSRCS)
+ EXPORTS_cairo += $(PDF_EXPORTS) $(PS_EXPORTS)
+ endif
+ 
+-ifneq (,$(filter android gonk,$(MOZ_WIDGET_TOOLKIT)))
++ifneq (,$(filter android gonk linuxgl,$(MOZ_WIDGET_TOOLKIT)))
+ CSRCS   += $(PSPDF_BASE_CSRCS) $(PDF_CSRCS)
+ EXPORTS_cairo += $(PDF_EXPORTS)
+ endif
+ 
+ ifeq ($(MOZ_WIDGET_TOOLKIT),qt)
+ CPPSRCS += cairo-qt-surface.cpp
+ CSRCS   += $(PSPDF_BASE_CSRCS) $(PDF_CSRCS) 
+ EXPORTS_cairo += cairo-qt.h
+diff --git a/gfx/gl/GLContextProviderEGL.cpp b/gfx/gl/GLContextProviderEGL.cpp
+--- a/gfx/gl/GLContextProviderEGL.cpp
++++ b/gfx/gl/GLContextProviderEGL.cpp
+@@ -12,20 +12,22 @@
+ #include <gdk/gdkx.h>
+ // we're using default display for now
+ #define GET_NATIVE_WINDOW(aWidget) (EGLNativeWindowType)GDK_WINDOW_XID((GdkWindow *) aWidget->GetNativeData(NS_NATIVE_WINDOW))
+ #elif defined(MOZ_WIDGET_QT)
+ #include <QtOpenGL/QGLContext>
+ #define GLdouble_defined 1
+ // we're using default display for now
+ #define GET_NATIVE_WINDOW(aWidget) (EGLNativeWindowType)static_cast<QWidget*>(aWidget->GetNativeData(NS_NATIVE_SHELLWIDGET))->winId()
+-#elif defined(MOZ_WIDGET_GONK)
++#elif defined(MOZ_WIDGET_GONK) || defined(MOZ_WIDGET_LINUXGL)
+ #define GET_NATIVE_WINDOW(aWidget) ((EGLNativeWindowType)aWidget->GetNativeData(NS_NATIVE_WINDOW))
++#if !defined(MOZ_WIDGET_LINUXGL)
+ #include "HwcComposer2D.h"
+ #endif
++#endif
+ 
+ #if defined(MOZ_X11)
+ #include <X11/Xlib.h>
+ #include <X11/Xutil.h>
+ #include "mozilla/X11Util.h"
+ #include "gfxXlibSurface.h"
+ #endif
+ 
+@@ -123,17 +125,17 @@ public:
+ 
+ 
+ #if defined(MOZ_PLATFORM_MAEMO) || defined(MOZ_WIDGET_GONK)
+ static bool gUseBackingSurface = true;
+ #else
+ static bool gUseBackingSurface = false;
+ #endif
+ 
+-#ifdef MOZ_WIDGET_GONK
++#if defined(MOZ_WIDGET_GONK) || defined(MOZ_WIDGET_LINUXGL)
+ extern nsIntRect gScreenBounds;
+ #endif
+ 
+ namespace mozilla {
+ namespace gl {
+ 
+ static GLLibraryEGL sEGLLibrary;
+ 
+@@ -325,16 +327,20 @@ public:
+             }
+ 
+ #ifdef MOZ_WIDGET_GONK
+         char propValue[PROPERTY_VALUE_MAX];
+         property_get("ro.build.version.sdk", propValue, "0");
+         if (atoi(propValue) < 15)
+             gUseBackingSurface = false;
+ #endif
++#ifdef MOZ_WIDGET_LINUXGL
++        if (getenv("USE_BACKING_SURFACE"))
++            gUseBackingSurface = true;
++#endif
+ 
+         bool current = MakeCurrent();
+         if (!current) {
+             gfx::LogFailure(NS_LITERAL_CSTRING(
+                 "Couldn't get device attachments for device."));
+             return false;
+         }
+ 
+@@ -2121,17 +2127,17 @@ CreateSurfaceForWindow(nsIWidget *aWidge
+     }
+ 
+     surface = mozilla::AndroidBridge::Bridge()->
+         CallEglCreateWindowSurface(EGL_DISPLAY(), config, sview);
+ #else
+     surface = sEGLLibrary.fCreateWindowSurface(EGL_DISPLAY(), config, GET_NATIVE_WINDOW(aWidget), 0);
+ #endif
+ 
+-#ifdef MOZ_WIDGET_GONK
++#if defined(MOZ_WIDGET_GONK) || defined(MOZ_WIDGET_LINUXGL)
+     gScreenBounds.x = 0;
+     gScreenBounds.y = 0;
+     sEGLLibrary.fQuerySurface(EGL_DISPLAY(), surface, LOCAL_EGL_WIDTH, &gScreenBounds.width);
+     sEGLLibrary.fQuerySurface(EGL_DISPLAY(), surface, LOCAL_EGL_HEIGHT, &gScreenBounds.height);
+ #endif
+ 
+     return surface;
+ }
+diff --git a/gfx/gl/Makefile.in b/gfx/gl/Makefile.in
+--- a/gfx/gl/Makefile.in
++++ b/gfx/gl/Makefile.in
+@@ -88,16 +88,24 @@ ifeq ($(MOZ_WIDGET_TOOLKIT),android)
+ GL_PROVIDER = EGL
+ endif
+ 
+ ifeq ($(MOZ_WIDGET_TOOLKIT),gonk)
+ GL_PROVIDER = EGL
+ LOCAL_INCLUDES = -I$(topsrcdir)/widget/gonk
+ endif
+ 
++ifeq ($(MOZ_WIDGET_TOOLKIT),linuxgl)
++ifdef MOZ_X11
++GL_PROVIDER = GLX
++else
++GL_PROVIDER = EGL
++endif
++endif
++
+ ifdef MOZ_GL_PROVIDER
+ GL_PROVIDER = $(MOZ_GL_PROVIDER)
+ endif
+ 
+ # Mac is a special snowflake
+ ifeq ($(GL_PROVIDER),CGL)
+ CMMSRCS += GLContextProvider$(GL_PROVIDER).mm
+ else
+diff --git a/gfx/thebes/Makefile.in b/gfx/thebes/Makefile.in
+--- a/gfx/thebes/Makefile.in
++++ b/gfx/thebes/Makefile.in
+@@ -74,16 +74,25 @@ endif
+ ifeq ($(MOZ_WIDGET_TOOLKIT),gonk)
+ EXPORTS += \
+ 	gfxAndroidPlatform.h \
+ 	gfxFT2Fonts.h \
+ 	gfxFT2FontBase.h \
+ 	$(NULL)
+ endif
+ 
++ifeq ($(MOZ_WIDGET_TOOLKIT),linuxgl)
++EXPORTS += \
++	gfxLinuxGLPlatform.h \
++	gfxFT2Fonts.h \
++	gfxFT2FontBase.h \
++	gfxPDFSurface.h \
++	$(NULL)
++endif
++
+ ifeq ($(MOZ_WIDGET_TOOLKIT),cocoa)
+ EXPORTS += \
+ 	gfxPlatformMac.h \
+ 	gfxQuartzSurface.h \
+ 	gfxQuartzImageSurface.h \
+ 	gfxQuartzNativeDrawing.h \
+ 	$(NULL)
+ endif
+@@ -183,17 +192,17 @@ CPPSRCS	= \
+ 	gfxScriptItemizer.cpp \
+ 	gfxHarfBuzzShaper.cpp \
+ 	gfxBaseSharedMemorySurface.cpp \
+ 	gfxReusableSurfaceWrapper.cpp \
+ 	nsSurfaceTexture.cpp \
+ 	gfxSVGGlyphs.cpp \
+ 	$(NULL)
+ 
+-ifeq ($(MOZ_WIDGET_TOOLKIT),$(findstring $(MOZ_WIDGET_TOOLKIT),android gtk2 gonk qt))
++ifeq ($(MOZ_WIDGET_TOOLKIT),$(findstring $(MOZ_WIDGET_TOOLKIT),android gtk2 gonk qt linuxgl))
+ DEFINES += -DMOZ_ENABLE_FREETYPE
+ endif
+ 
+ ifdef MOZ_GRAPHITE
+ DEFINES += -DGRAPHITE2_STATIC
+ CPPSRCS	+= \
+ 	gfxGraphiteShaper.cpp \
+ 	$(NULL)
+@@ -274,16 +283,31 @@ CPPSRCS += \
+ 	gfxFT2FontBase.cpp \
+ 	gfxFT2Utils.cpp \
+ 	gfxFT2FontList.cpp \
+ 	gfxPDFSurface.cpp \
+ 	nsUnicodeRange.cpp \
+ 	$(NULL)
+ endif
+ 
++ifeq ($(MOZ_WIDGET_TOOLKIT),linuxgl)
++EXPORTS	+= \
++	gfxPDFSurface.h \
++	$(NULL)
++CPPSRCS += \
++	gfxLinuxGLPlatform.cpp \
++	gfxFT2Fonts.cpp \
++	gfxFT2FontBase.cpp \
++	gfxFT2Utils.cpp \
++	gfxFT2FontList.cpp \
++	gfxPDFSurface.cpp \
++	nsUnicodeRange.cpp \
++	$(NULL)
++endif
++
+ ifeq ($(MOZ_WIDGET_TOOLKIT),os2)
+ CPPSRCS	+=	gfxOS2Fonts.cpp \
+ 		gfxOS2Platform.cpp \
+ 		gfxOS2Surface.cpp \
+ 		nsUnicodeRange.cpp \
+ 		gfxFontconfigUtils.cpp \
+ 		$(NULL)
+ CPPSRCS +=	gfxPDFSurface.cpp
+@@ -365,16 +389,20 @@ CFLAGS += $(MOZ_CAIRO_CFLAGS) $(MOZ_PIXM
+ ifeq ($(MOZ_WIDGET_TOOLKIT),android)
+ CXXFLAGS += $(CAIRO_FT_CFLAGS)
+ endif
+ 
+ ifeq ($(MOZ_WIDGET_TOOLKIT),gonk)
+ CXXFLAGS += $(CAIRO_FT_CFLAGS)
+ endif
+ 
++ifeq ($(MOZ_WIDGET_TOOLKIT),linuxgl)
++CXXFLAGS += $(CAIRO_FT_CFLAGS)
++endif
++
+ ifeq ($(MOZ_WIDGET_TOOLKIT),gtk2)
+ CXXFLAGS += $(MOZ_PANGO_CFLAGS)
+ endif
+ 
+ ifeq ($(MOZ_WIDGET_TOOLKIT),os2)
+ CXXFLAGS += $(CAIRO_FT_CFLAGS)
+ endif
+ 
+diff --git a/gfx/thebes/gfxAndroidPlatform.cpp b/gfx/thebes/gfxLinuxGLPlatform.cpp
+copy from gfx/thebes/gfxAndroidPlatform.cpp
+copy to gfx/thebes/gfxLinuxGLPlatform.cpp
+--- a/gfx/thebes/gfxAndroidPlatform.cpp
++++ b/gfx/thebes/gfxLinuxGLPlatform.cpp
+@@ -1,18 +1,19 @@
+ /* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+  * This Source Code Form is subject to the terms of the Mozilla Public
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+ #include "base/basictypes.h"
+ 
+-#include "gfxAndroidPlatform.h"
++#include "gfxLinuxGLPlatform.h"
+ #include "mozilla/gfx/2D.h"
+ 
++#include "gfxFT2Fonts.h"
+ #include "gfxFT2FontList.h"
+ #include "gfxImageSurface.h"
+ #include "mozilla/dom/ContentChild.h"
+ #include "nsXULAppAPI.h"
+ #include "nsIScreen.h"
+ #include "nsIScreenManager.h"
+ 
+ #include "cairo.h"
+@@ -73,17 +74,17 @@ CountingRealloc(FT_Memory memory, long c
+         sFreetypeMemoryUsed += FreetypeMallocSizeOfOnAlloc(pnew);
+     } else {
+         // realloc failed;  undo the decrement from above
+         sFreetypeMemoryUsed += FreetypeMallocSizeOfOnAlloc(p);
+     }
+     return pnew;
+ }
+ 
+-gfxAndroidPlatform::gfxAndroidPlatform()
++gfxLinuxGLPlatform::gfxLinuxGLPlatform()
+ {
+     // A custom allocator.  It counts allocations, enabling memory reporting.
+     sFreetypeMemoryRecord.user    = nullptr;
+     sFreetypeMemoryRecord.alloc   = CountingAlloc;
+     sFreetypeMemoryRecord.free    = CountingFree;
+     sFreetypeMemoryRecord.realloc = CountingRealloc;
+ 
+     // These two calls are equivalent to FT_Init_FreeType(), but allow us to
+@@ -99,94 +100,94 @@ gfxAndroidPlatform::gfxAndroidPlatform()
+     mScreenDepth = 24;
+     screen->GetColorDepth(&mScreenDepth);
+ 
+     mOffscreenFormat = mScreenDepth == 16
+                        ? gfxASurface::ImageFormatRGB16_565
+                        : gfxASurface::ImageFormatRGB24;
+ }
+ 
+-gfxAndroidPlatform::~gfxAndroidPlatform()
++gfxLinuxGLPlatform::~gfxLinuxGLPlatform()
+ {
+     cairo_debug_reset_static_data();
+ 
+     FT_Done_Library(gPlatformFTLibrary);
+     gPlatformFTLibrary = NULL;
+ }
+ 
+ already_AddRefed<gfxASurface>
+-gfxAndroidPlatform::CreateOffscreenSurface(const gfxIntSize& size,
++gfxLinuxGLPlatform::CreateOffscreenSurface(const gfxIntSize& size,
+                                       gfxASurface::gfxContentType contentType)
+ {
+     nsRefPtr<gfxASurface> newSurface;
+     newSurface = new gfxImageSurface(size, OptimalFormatForContent(contentType));
+ 
+     return newSurface.forget();
+ }
+ 
+ nsresult
+-gfxAndroidPlatform::GetFontList(nsIAtom *aLangGroup,
++gfxLinuxGLPlatform::GetFontList(nsIAtom *aLangGroup,
+                                 const nsACString& aGenericFamily,
+                                 nsTArray<nsString>& aListOfFonts)
+ {
+     gfxPlatformFontList::PlatformFontList()->GetFontList(aLangGroup,
+                                                          aGenericFamily,
+                                                          aListOfFonts);
+     return NS_OK;
+ }
+ 
+ void
+-gfxAndroidPlatform::GetFontList(InfallibleTArray<FontListEntry>* retValue)
++gfxLinuxGLPlatform::GetFontList(InfallibleTArray<FontListEntry>* retValue)
+ {
+     gfxFT2FontList::PlatformFontList()->GetFontList(retValue);
+ }
+ 
+ nsresult
+-gfxAndroidPlatform::UpdateFontList()
++gfxLinuxGLPlatform::UpdateFontList()
+ {
+     gfxPlatformFontList::PlatformFontList()->UpdateFontList();
+     return NS_OK;
+ }
+ 
+ nsresult
+-gfxAndroidPlatform::ResolveFontName(const nsAString& aFontName,
++gfxLinuxGLPlatform::ResolveFontName(const nsAString& aFontName,
+                                     FontResolverCallback aCallback,
+                                     void *aClosure,
+                                     bool& aAborted)
+ {
+     nsAutoString resolvedName;
+     if (!gfxPlatformFontList::PlatformFontList()->
+              ResolveFontName(aFontName, resolvedName)) {
+         aAborted = false;
+         return NS_OK;
+     }
+     aAborted = !(*aCallback)(resolvedName, aClosure);
+     return NS_OK;
+ }
+ 
+ nsresult
+-gfxAndroidPlatform::GetStandardFamilyName(const nsAString& aFontName, nsAString& aFamilyName)
++gfxLinuxGLPlatform::GetStandardFamilyName(const nsAString& aFontName, nsAString& aFamilyName)
+ {
+     gfxPlatformFontList::PlatformFontList()->GetStandardFamilyName(aFontName, aFamilyName);
+     return NS_OK;
+ }
+ 
+ gfxPlatformFontList*
+-gfxAndroidPlatform::CreatePlatformFontList()
++gfxLinuxGLPlatform::CreatePlatformFontList()
+ {
+     gfxPlatformFontList* list = new gfxFT2FontList();
+     if (NS_SUCCEEDED(list->InitFontList())) {
+         return list;
+     }
+     gfxPlatformFontList::Shutdown();
+     return nullptr;
+ }
+ 
+ bool
+-gfxAndroidPlatform::IsFontFormatSupported(nsIURI *aFontURI, uint32_t aFormatFlags)
++gfxLinuxGLPlatform::IsFontFormatSupported(nsIURI *aFontURI, uint32_t aFormatFlags)
+ {
+     // check for strange format flags
+     NS_ASSERTION(!(aFormatFlags & gfxUserFontSet::FLAG_FORMAT_NOT_USED),
+                  "strange font format hint set");
+ 
+     // accept supported formats
+     if (aFormatFlags & (gfxUserFontSet::FLAG_FORMAT_OPENTYPE |
+                         gfxUserFontSet::FLAG_FORMAT_WOFF |
+@@ -199,72 +200,72 @@ gfxAndroidPlatform::IsFontFormatSupporte
+         return false;
+     }
+ 
+     // no format hint set, need to look at data
+     return true;
+ }
+ 
+ gfxFontGroup *
+-gfxAndroidPlatform::CreateFontGroup(const nsAString &aFamilies,
++gfxLinuxGLPlatform::CreateFontGroup(const nsAString &aFamilies,
+                                const gfxFontStyle *aStyle,
+                                gfxUserFontSet* aUserFontSet)
+ {
+     return new gfxFontGroup(aFamilies, aStyle, aUserFontSet);
+ }
+ 
+ FT_Library
+-gfxAndroidPlatform::GetFTLibrary()
++gfxLinuxGLPlatform::GetFTLibrary()
+ {
+     return gPlatformFTLibrary;
+ }
+ 
+-gfxFontEntry* 
+-gfxAndroidPlatform::MakePlatformFont(const gfxProxyFontEntry *aProxyEntry,
++gfxFontEntry*
++gfxLinuxGLPlatform::MakePlatformFont(const gfxProxyFontEntry *aProxyEntry,
+                                      const uint8_t *aFontData, uint32_t aLength)
+ {
+     return gfxPlatformFontList::PlatformFontList()->MakePlatformFont(aProxyEntry,
+                                                                      aFontData,
+                                                                      aLength);
+ }
+ 
+ TemporaryRef<ScaledFont>
+-gfxAndroidPlatform::GetScaledFontForFont(DrawTarget* aTarget, gfxFont *aFont)
++gfxLinuxGLPlatform::GetScaledFontForFont(DrawTarget* aTarget, gfxFont *aFont)
+ {
+     NativeFont nativeFont;
+     if (aTarget->GetType() == BACKEND_CAIRO) {
+         nativeFont.mType = NATIVE_FONT_CAIRO_FONT_FACE;
+         nativeFont.mFont = NULL;
+         return Factory::CreateScaledFontWithCairo(nativeFont, aFont->GetAdjustedSize(), aFont->GetCairoScaledFont());
+     }
+- 
++
+     NS_ASSERTION(aFont->GetType() == gfxFont::FONT_TYPE_FT2, "Expecting Freetype font");
+     nativeFont.mType = NATIVE_FONT_SKIA_FONT_FACE;
+     nativeFont.mFont = static_cast<gfxFT2FontBase*>(aFont)->GetFontOptions();
+     return Factory::CreateScaledFontForNativeFont(nativeFont, aFont->GetAdjustedSize());
+ }
+ 
+ bool
+-gfxAndroidPlatform::FontHintingEnabled()
++gfxLinuxGLPlatform::FontHintingEnabled()
+ {
+     // In "mobile" builds, we sometimes use non-reflow-zoom, so we
+     // might not want hinting.  Let's see.
+ #ifdef MOZ_USING_ANDROID_JAVA_WIDGETS
+     // On android-java, we currently only use gecko to render web
+     // content that can always be be non-reflow-zoomed.  So turn off
+     // hinting.
+-    // 
++    //
+     // XXX when gecko-android-java is used as an "app runtime", we'll
+     // want to re-enable hinting.
+     return false;
+ #else
+     // Otherwise, enable hinting unless we're in a content process
+     // that might be used for non-reflowing zoom.
+     return XRE_GetProcessType() != GeckoProcessType_Content ||
+            ContentChild::GetSingleton()->HasOwnApp();
+ #endif //  MOZ_USING_ANDROID_JAVA_WIDGETS
+ }
+ 
+ int
+-gfxAndroidPlatform::GetScreenDepth() const
++gfxLinuxGLPlatform::GetScreenDepth() const
+ {
+     return mScreenDepth;
+ }
+diff --git a/gfx/thebes/gfxAndroidPlatform.h b/gfx/thebes/gfxLinuxGLPlatform.h
+copy from gfx/thebes/gfxAndroidPlatform.h
+copy to gfx/thebes/gfxLinuxGLPlatform.h
+--- a/gfx/thebes/gfxAndroidPlatform.h
++++ b/gfx/thebes/gfxLinuxGLPlatform.h
+@@ -1,37 +1,36 @@
+ /* -*- Mode: C++; tab-width: 20; indent-tabs-mode: nil; c-basic-offset: 4 -*-
+  * This Source Code Form is subject to the terms of the Mozilla Public
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+ #ifndef GFX_PLATFORM_ANDROID_H
+ #define GFX_PLATFORM_ANDROID_H
+ 
+-#include "gfxFT2Fonts.h"
+ #include "gfxPlatform.h"
+ #include "gfxUserFontSet.h"
+ #include "nsTArray.h"
+ 
+ namespace mozilla {
+     namespace dom {
+         class FontListEntry;
+-    };
+-};
++    }
++}
+ using mozilla::dom::FontListEntry;
+ 
+ typedef struct FT_LibraryRec_ *FT_Library;
+ 
+-class THEBES_API gfxAndroidPlatform : public gfxPlatform {
++class THEBES_API gfxLinuxGLPlatform : public gfxPlatform {
+ public:
+-    gfxAndroidPlatform();
+-    virtual ~gfxAndroidPlatform();
++    gfxLinuxGLPlatform();
++    virtual ~gfxLinuxGLPlatform();
+ 
+-    static gfxAndroidPlatform *GetPlatform() {
+-        return (gfxAndroidPlatform*) gfxPlatform::GetPlatform();
++    static gfxLinuxGLPlatform *GetPlatform() {
++        return (gfxLinuxGLPlatform*) gfxPlatform::GetPlatform();
+     }
+ 
+     virtual already_AddRefed<gfxASurface>
+     CreateOffscreenSurface(const gfxIntSize& size,
+                            gfxASurface::gfxContentType contentType);
+     
+     virtual gfxImageFormat GetOffscreenFormat() { return mOffscreenFormat; }
+     
+diff --git a/gfx/thebes/gfxPlatform.cpp b/gfx/thebes/gfxPlatform.cpp
+--- a/gfx/thebes/gfxPlatform.cpp
++++ b/gfx/thebes/gfxPlatform.cpp
+@@ -26,16 +26,18 @@
+ #elif defined(MOZ_WIDGET_GTK)
+ #include "gfxPlatformGtk.h"
+ #elif defined(MOZ_WIDGET_QT)
+ #include "gfxQtPlatform.h"
+ #elif defined(XP_OS2)
+ #include "gfxOS2Platform.h"
+ #elif defined(ANDROID)
+ #include "gfxAndroidPlatform.h"
++#elif defined(MOZ_WIDGET_LINUXGL)
++#include "gfxLinuxGLPlatform.h"
+ #endif
+ 
+ #include "nsGkAtoms.h"
+ #include "gfxPlatformFontList.h"
+ #include "gfxContext.h"
+ #include "gfxImageSurface.h"
+ #include "gfxUserFontSet.h"
+ #include "nsUnicodeProperties.h"
+@@ -316,16 +318,18 @@ gfxPlatform::Init()
+ #elif defined(MOZ_WIDGET_GTK)
+     gPlatform = new gfxPlatformGtk;
+ #elif defined(MOZ_WIDGET_QT)
+     gPlatform = new gfxQtPlatform;
+ #elif defined(XP_OS2)
+     gPlatform = new gfxOS2Platform;
+ #elif defined(ANDROID)
+     gPlatform = new gfxAndroidPlatform;
++#elif defined(MOZ_WIDGET_LINUXGL)
++    gPlatform = new gfxLinuxGLPlatform;
+ #else
+     #error "No gfxPlatform implementation available"
+ #endif
+ 
+ #ifdef DEBUG
+     mozilla::gl::GLContext::StaticInit();
+ #endif
+ 

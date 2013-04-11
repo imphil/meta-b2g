@@ -1,0 +1,123 @@
+# HG changeset patch
+# Date 1359974823 -3600
+# Parent c82b70ee4c548dd625f6fd9c58833acb711b1d44
+# User Philipp Wagner <mail@philipp-wagner.com>
+Load libGLESv2.so to preserve load order on Raspberry Pi
+
+To understand why this is necessary, look at the following outputs:
+
+root@raspberrypi:/usr/lib# ldd libEGL.so
+ldd: warning: you do not have execution permission for `./libEGL.so'
+        libvchiq_arm.so => /usr/lib/libvchiq_arm.so (0x400d3000)
+        libvcos.so => /usr/lib/libvcos.so (0x40009000)
+        libbcm_host.so => /usr/lib/libbcm_host.so (0x40064000)
+        libm.so.6 => /lib/libm.so.6 (0x400e0000)
+        libpthread.so.0 => /lib/libpthread.so.0 (0x4014a000)
+        libdl.so.2 => /lib/libdl.so.2 (0x40169000)
+        librt.so.1 => /lib/librt.so.1 (0x4008d000)
+        libc.so.6 => /lib/libc.so.6 (0x40174000)
+        /lib/ld-linux.so.3 (0x48480000)
+
+
+ldd: warning: you do not have execution permission for `./libGLESv2.so'
+        libEGL.so => /usr/lib/libEGL.so (0x401d0000)
+        libvcos.so => /usr/lib/libvcos.so (0x4009a000)
+        libbcm_host.so => /usr/lib/libbcm_host.so (0x4003f000)
+        libpthread.so.0 => /lib/libpthread.so.0 (0x40058000)
+        libdl.so.2 => /lib/libdl.so.2 (0x40077000)
+        librt.so.1 => /lib/librt.so.1 (0x4001a000)
+        libvchiq_arm.so => /usr/lib/libvchiq_arm.so (0x40082000)
+        libm.so.6 => /lib/libm.so.6 (0x40159000)
+        libc.so.6 => /lib/libc.so.6 (0x40202000)
+        /lib/ld-linux.so.3 (0x48480000)
+
+Before this patch, only libEGL.so is loaded, which has no dependendy on
+libGLESv2.so. But looking at one symbol as example:
+
+root@raspberrypi:/usr/lib# nm -D -u libEGL.so
+[...cut...]
+         U glxx_buffer_info_get
+[...cut...]
+
+root@raspberrypi:/usr/lib# nm -D --defined-only libGLESv2.so
+[...cut...]
+00004dc8 T glxx_buffer_info_get
+[...cut...]
+
+So libEGL.so needs libGLESv2.so to resolve this symbol, but does not have a
+dependency on it, so the loader does not know how to resolve it and gives an
+error.
+
+This patch preloads libGLESv2.so before libEGL.so, and by that all symbols can
+be resolved properly. The libraries itself are binary-only and cannot be
+changed (I don't know if this is intentional or a bug).
+
+diff --git a/gfx/gl/GLLibraryEGL.cpp b/gfx/gl/GLLibraryEGL.cpp
+--- a/gfx/gl/GLLibraryEGL.cpp
++++ b/gfx/gl/GLLibraryEGL.cpp
+@@ -5,16 +5,18 @@
+ #include "GLLibraryEGL.h"
+ 
+ #include "gfxCrashReporterUtils.h"
+ #include "mozilla/Preferences.h"
+ #include "nsDirectoryServiceDefs.h"
+ #include "nsDirectoryServiceUtils.h"
+ #include "nsPrintfCString.h"
+ #include "prenv.h"
++#include "prlog.h"
++#include "prerror.h"
+ 
+ namespace mozilla {
+ namespace gl {
+ 
+ // should match the order of EGLExtensions, and be null-terminated.
+ static const char *sExtensionNames[] = {
+     "EGL_KHR_image_base",
+     "EGL_KHR_image_pixmap",
+@@ -128,22 +130,46 @@ GLLibraryEGL::EnsureInitialized()
+     // the APITrace lib, libEGL.so, and libEGL.so.1 in that order.
+ 
+ #if defined(ANDROID)
+     if (!mEGLLibrary)
+         mEGLLibrary = LoadApitraceLibrary();
+ #endif
+ 
+     if (!mEGLLibrary) {
++        printf_stderr("Attempting load of libGLESv2.so\n");
++        PR_LoadLibrary("libGLESv2.so");
++        // leaking this library like we do on Windows to preserve load order
++        
+         printf_stderr("Attempting load of libEGL.so\n");
+         mEGLLibrary = PR_LoadLibrary("libEGL.so");
++#ifdef DEBUG
++        if (!mEGLLibrary) {
++            char errorMsg[1024] = "<unknown; can't get error from NSPR>";
++            if (PR_GetErrorTextLength() < (int) sizeof(errorMsg))
++                PR_GetErrorText(errorMsg);
++            printf_stderr("Failed to load EGL library: (%lx) %s\n", 
++                          PR_GetOSError(), errorMsg);
++        }
++#endif
+     }
++    
+ #if defined(XP_UNIX)
+     if (!mEGLLibrary) {
++        printf_stderr("Attempting load of libEGL.so.1\n");
+         mEGLLibrary = PR_LoadLibrary("libEGL.so.1");
++#ifdef DEBUG
++        if (!mEGLLibrary) {
++            char errorMsg[1024] = "<unknown; can't get error from NSPR>";
++            if (PR_GetErrorTextLength() < (int) sizeof(errorMsg))
++                PR_GetErrorText(errorMsg);
++            printf_stderr("Failed to load EGL library: (%lx) %s\n", 
++                          PR_GetOSError(), errorMsg);
++        }
++#endif
+     }
+ #endif
+ 
+     if (!mEGLLibrary) {
+         NS_WARNING("Couldn't load EGL LIB.");
+         return false;
+     }
+ 

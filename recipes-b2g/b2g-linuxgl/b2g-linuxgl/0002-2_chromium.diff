@@ -1,0 +1,28 @@
+# HG changeset patch
+# Date 1359974735 -3600
+# User Philipp Wagner <mail@philipp-wagner.com>
+# Parent f595ed6637fb016ec291c24500d1efbc6f274264
+Bug 731498 - LinuxGL port
+
+diff --git a/ipc/chromium/src/base/message_loop.cc b/ipc/chromium/src/base/message_loop.cc
+--- a/ipc/chromium/src/base/message_loop.cc
++++ b/ipc/chromium/src/base/message_loop.cc
+@@ -121,17 +121,17 @@ MessageLoop::MessageLoop(Type type)
+   } else {
+     DCHECK(type_ == TYPE_UI);
+     pump_ = new base::MessagePumpForUI();
+   }
+ #elif defined(OS_POSIX)
+   if (type_ == TYPE_UI) {
+ #if defined(OS_MACOSX)
+     pump_ = base::MessagePumpMac::Create();
+-#elif defined(OS_LINUX) || defined(OS_BSD)
++#elif (defined(OS_LINUX) || defined(OS_BSD)) && !defined(MOZ_WIDGET_LINUXGL)
+     pump_ = new base::MessagePumpForUI();
+ #endif  // OS_LINUX
+   } else if (type_ == TYPE_IO) {
+     pump_ = new base::MessagePumpLibevent();
+   } else {
+     pump_ = new base::MessagePumpDefault();
+   }
+ #endif  // OS_POSIX

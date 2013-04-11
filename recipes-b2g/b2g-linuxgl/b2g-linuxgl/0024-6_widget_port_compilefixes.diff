@@ -1,0 +1,153 @@
+# HG changeset patch
+# Date 1359974834 -3600
+# Parent d6a648c0dd706f330bcd202f018b49eb164222d4
+# User Philipp Wagner <mail@philipp-wagner.com>
+
+diff --git a/widget/linuxgl/nsAppShell.cpp b/widget/linuxgl/nsAppShell.cpp
+--- a/widget/linuxgl/nsAppShell.cpp
++++ b/widget/linuxgl/nsAppShell.cpp
+@@ -38,17 +38,16 @@
+ #include "nsDOMTouchEvent.h"
+ #include "nsGkAtoms.h"
+ #include "nsGUIEvent.h"
+ #include "nsIObserverService.h"
+ #include "nsIScreen.h"
+ #include "nsScreenManagerLinuxGL.h"
+ #include "nsWindow.h"
+ #include "OrientationObserver.h"
+-#include "GonkMemoryPressureMonitoring.h"
+ #include "GeckoInputDispatcher.h"
+ 
+ #include "sampler.h"
+ 
+ #ifdef VERBOSE_LOG_ENABLED
+ # define VERBOSE_LOG(FMT, ARG...)                           \
+     printf("LinuxGL:%s:%s :%d: " FMT "\n", __FILE__, __FUNCTION__, __LINE__, ## ARG)
+ #else
+@@ -134,18 +133,16 @@ nsAppShell::Init()
+     NS_ENSURE_TRUE(epollfd >= 0, NS_ERROR_UNEXPECTED);
+ 
+     int ret = pipe2(signalfds, O_NONBLOCK);
+     NS_ENSURE_FALSE(ret, NS_ERROR_UNEXPECTED);
+ 
+     rv = AddFdHandler(signalfds[0], pipeHandler, "");
+     NS_ENSURE_SUCCESS(rv, rv);
+ 
+-    InitGonkMemoryPressureMonitoring();
+-
+     nsCOMPtr<nsIObserverService> obsServ = GetObserverService();
+     if (obsServ) {
+         obsServ->AddObserver(this, "browser-ui-startup-complete", false);
+     }
+ 
+     // Delay initializing input devices until the screen has been
+     // initialized (and we know the resolution).
+     return rv;
+diff --git a/widget/linuxgl/nsWindow.cpp b/widget/linuxgl/nsWindow.cpp
+--- a/widget/linuxgl/nsWindow.cpp
++++ b/widget/linuxgl/nsWindow.cpp
+@@ -23,17 +23,16 @@
+ #include "mozilla/Hal.h"
+ #include "mozilla/Preferences.h"
+ #include "mozilla/FileUtils.h"
+ #include "Framebuffer.h"
+ #include "gfxContext.h"
+ #include "gfxPlatform.h"
+ #include "gfxUtils.h"
+ #include "GLContextProvider.h"
+-#include "HwcComposer2D.h"
+ #include "LayerManagerOGL.h"
+ #include "nsAutoPtr.h"
+ #include "nsAppShell.h"
+ #include "nsIdleService.h"
+ #include "nsScreenManagerLinuxGL.h"
+ #include "nsTArray.h"
+ #include "nsWindow.h"
+ #include "nsIWidgetListener.h"
+@@ -70,17 +69,16 @@ static gfxMatrix sRotationMatrix;
+ 
+ static nsRefPtr<GLContext> sGLContext;
+ static nsTArray<nsWindow *> sTopWindows;
+ static nsWindow *gWindowToRedraw = nullptr;
+ static nsWindow *gFocusedWindow = nullptr;
+ static void *gNativeWindow = nullptr;
+ static bool sFramebufferOpen;
+ static bool sUsingOMTC;
+-static bool sUsingHwc;
+ static bool sScreenInitialized;
+ static nsRefPtr<gfxASurface> sOMTCSurface;
+ static pthread_t sFramebufferWatchThread;
+ static bool sMayCreateNativeWindow = false;
+ static bool sPlatformInitialized = false;
+ #ifdef MOZ_BROADCOM
+ static DISPMANX_DISPLAY_HANDLE_T dispman_display = 0;
+ static DISPMANX_UPDATE_HANDLE_T dispman_update = 0;
+@@ -338,17 +336,16 @@ nsWindow::nsWindow()
+         // This is a hack to force initialization of the compositor
+         // resources, if we're going to use omtc.
+         //
+         // NB: GetPlatform() will create the gfxPlatform, which wants
+         // to know the color depth, which asks our native window.
+         // This has to happen after other init has finished.
+         gfxPlatform::GetPlatform();
+         sUsingOMTC = UseOffMainThreadCompositing();
+-        sUsingHwc = Preferences::GetBool("layers.composer2d.enabled", false);
+ 
+         if (sUsingOMTC) {
+           sOMTCSurface = new gfxImageSurface(gfxIntSize(1, 1),
+                                              gfxASurface::ImageFormatRGB24);
+         }
+     }
+     InitPlatform();
+ }
+@@ -829,28 +826,16 @@ bool
+ nsWindow::NeedsPaint()
+ {
+   if (!mLayerManager) {
+     return false;
+   }
+   return nsIWidget::NeedsPaint();
+ }
+ 
+-Composer2D*
+-nsWindow::GetComposer2D()
+-{
+-    if (!sUsingHwc) {
+-        return nullptr;
+-    }
+-    if (HwcComposer2D* hwc = HwcComposer2D::GetInstance()) {
+-        return hwc->Initialized() ? hwc : nullptr;
+-    }
+-    return nullptr;
+-}
+-
+ // nsScreenLinuxGL.cpp
+ 
+ nsScreenLinuxGL::nsScreenLinuxGL(void *nativeScreen)
+ {
+ }
+ 
+ nsScreenLinuxGL::~nsScreenLinuxGL()
+ {
+diff --git a/widget/linuxgl/nsWindow.h b/widget/linuxgl/nsWindow.h
+--- a/widget/linuxgl/nsWindow.h
++++ b/widget/linuxgl/nsWindow.h
+@@ -104,18 +104,16 @@ public:
+                                       const InputContextAction& aAction);
+     NS_IMETHOD_(InputContext) GetInputContext();
+ 
+     virtual uint32_t GetGLFrameBufferFormat() MOZ_OVERRIDE;
+ 
+     virtual nsIntRect GetNaturalBounds() MOZ_OVERRIDE;
+     virtual bool NeedsPaint();
+ 
+-    virtual Composer2D* GetComposer2D() MOZ_OVERRIDE;
+-
+ protected:
+     nsWindow* mParent;
+     bool mVisible;
+     nsIntRegion mDirtyRegion;
+     InputContext mInputContext;
+     nsCOMPtr<nsIIdleServiceInternal> mIdleService;
+ 
+     void BringToTop();

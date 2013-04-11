@@ -1,0 +1,27 @@
+# HG changeset patch
+# Date 1359974838 -3600
+# Parent da8658e2012c2632653d4065986a6906d1e8a637
+# User Philipp Wagner <mail@philipp-wagner.com>
+
+diff --git a/widget/linuxgl/nsAppShell.cpp b/widget/linuxgl/nsAppShell.cpp
+--- a/widget/linuxgl/nsAppShell.cpp
++++ b/widget/linuxgl/nsAppShell.cpp
+@@ -108,17 +108,17 @@ sendMouseEvent(uint32_t msg, uint64_t ti
+     event.mFlags.mNoCrossProcessBoundaryForwarding = !forwardToChildren;
+ 
+     nsWindow::DispatchInputEvent(event);
+ }
+ 
+ nsAppShell::nsAppShell()
+     : mNativeCallbackRequest(false)
+     , mHandlers()
+-    , mEnableDraw(false)
++    , mEnableDraw(true)
+ {
+     gAppShell = this;
+ }
+ 
+ nsAppShell::~nsAppShell()
+ {
+     gAppShell = NULL;
+ }

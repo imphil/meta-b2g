@@ -1,0 +1,363 @@
+# HG changeset patch
+# Date 1359974780 -3600
+# User Philipp Wagner <mail@philipp-wagner.com>
+# Parent 2d26fd6d32d7a459ce5aeebdbf335a4a115b06dd
+Bug 731498 - LinuxGL port
+
+diff --git a/gfx/src/X11Util.h b/gfx/src/X11Util.h
+--- a/gfx/src/X11Util.h
++++ b/gfx/src/X11Util.h
+@@ -12,16 +12,19 @@
+ 
+ #if defined(MOZ_WIDGET_GTK)
+ #  include <gdk/gdk.h>
+ #  include <gdk/gdkx.h>
+ #elif defined(MOZ_WIDGET_QT)
+ #include "gfxQtPlatform.h"
+ #undef CursorShape
+ #  include <X11/Xlib.h>
++#elif defined(MOZ_WIDGET_LINUXGL)
++#include "gfxLinuxGLPlatform.h"
++#  include <X11/Xlib.h>
+ #else
+ #  error Unknown toolkit
+ #endif 
+ 
+ #include "mozilla/Scoped.h"
+ 
+ #include "gfxCore.h"
+ #include "nsDebug.h"
+@@ -33,16 +36,21 @@ namespace mozilla {
+  */
+ inline Display*
+ DefaultXDisplay()
+ {
+ #if defined(MOZ_WIDGET_GTK)
+   return GDK_DISPLAY_XDISPLAY(gdk_display_get_default());
+ #elif defined(MOZ_WIDGET_QT)
+   return gfxQtPlatform::GetXDisplay();
++#elif defined(MOZ_WIDGET_LINUXGL)
++  return gfxLinuxGLPlatform::GetXDisplay();
++#else
++  NS_WARNING("X11 build but no toolkit display defined");
++  return nsnull;
+ #endif
+ }
+ 
+ /**
+  * Sets *aVisual to point to aDisplay's Visual struct corresponding to
+  * aVisualID, and *aDepth to its depth.  When aVisualID is None, these are set
+  * to NULL and 0 respectively.  Both out-parameter pointers are assumed
+  * non-NULL.
+diff --git a/gfx/thebes/Makefile.in b/gfx/thebes/Makefile.in
+--- a/gfx/thebes/Makefile.in
++++ b/gfx/thebes/Makefile.in
+@@ -81,16 +81,22 @@ endif
+ 
+ ifeq ($(MOZ_WIDGET_TOOLKIT),linuxgl)
+ EXPORTS += \
+ 	gfxLinuxGLPlatform.h \
+ 	gfxFT2Fonts.h \
+ 	gfxFT2FontBase.h \
+ 	gfxPDFSurface.h \
+ 	$(NULL)
++ifdef MOZ_X11
++EXPORTS += \
++	gfxXlibSurface.h \
++	gfxXlibNativeRenderer.h \
++	$(NULL)
++endif
+ endif
+ 
+ ifeq ($(MOZ_WIDGET_TOOLKIT),cocoa)
+ EXPORTS += \
+ 	gfxPlatformMac.h \
+ 	gfxQuartzSurface.h \
+ 	gfxQuartzImageSurface.h \
+ 	gfxQuartzNativeDrawing.h \
+@@ -296,16 +302,19 @@ CPPSRCS += \
+ 	gfxLinuxGLPlatform.cpp \
+ 	gfxFT2Fonts.cpp \
+ 	gfxFT2FontBase.cpp \
+ 	gfxFT2Utils.cpp \
+ 	gfxFT2FontList.cpp \
+ 	gfxPDFSurface.cpp \
+ 	nsUnicodeRange.cpp \
+ 	$(NULL)
++ifdef MOZ_X11
++CPPSRCS += gfxXlibSurface.cpp gfxXlibNativeRenderer.cpp
++endif
+ endif
+ 
+ ifeq ($(MOZ_WIDGET_TOOLKIT),os2)
+ CPPSRCS	+=	gfxOS2Fonts.cpp \
+ 		gfxOS2Platform.cpp \
+ 		gfxOS2Surface.cpp \
+ 		nsUnicodeRange.cpp \
+ 		gfxFontconfigUtils.cpp \
+diff --git a/gfx/thebes/gfxLinuxGLPlatform.cpp b/gfx/thebes/gfxLinuxGLPlatform.cpp
+--- a/gfx/thebes/gfxLinuxGLPlatform.cpp
++++ b/gfx/thebes/gfxLinuxGLPlatform.cpp
+@@ -10,28 +10,35 @@
+ 
+ #include "gfxFT2Fonts.h"
+ #include "gfxFT2FontList.h"
+ #include "gfxImageSurface.h"
+ #include "mozilla/dom/ContentChild.h"
+ #include "nsXULAppAPI.h"
+ #include "nsIScreen.h"
+ #include "nsIScreenManager.h"
++#ifdef MOZ_X11
++#include "gfxXlibSurface.h"
++#include "mozilla/X11Util.h"
++#endif
+ 
+ #include "cairo.h"
+ 
+ #include "ft2build.h"
+ #include FT_FREETYPE_H
+ #include FT_MODULE_H
+ 
+ using namespace mozilla;
+ using namespace mozilla::dom;
+ using namespace mozilla::gfx;
+ 
+ static FT_Library gPlatformFTLibrary = NULL;
++#ifdef MOZ_X11
++static Display* sCachedPlatformDisplay = NULL;
++#endif
+ 
+ #define LOG(args...)  __android_log_print(ANDROID_LOG_INFO, "GeckoFonts" , ## args)
+ 
+ static int64_t sFreetypeMemoryUsed;
+ static FT_MemoryRec_ sFreetypeMemoryRecord;
+ 
+ static int64_t
+ GetFreetypeSize()
+@@ -106,18 +113,35 @@ gfxLinuxGLPlatform::gfxLinuxGLPlatform()
+ }
+ 
+ gfxLinuxGLPlatform::~gfxLinuxGLPlatform()
+ {
+     cairo_debug_reset_static_data();
+ 
+     FT_Done_Library(gPlatformFTLibrary);
+     gPlatformFTLibrary = NULL;
++#ifdef MOZ_X11
++    if (sCachedPlatformDisplay) {
++        XCloseDisplay(sCachedPlatformDisplay);
++        sCachedPlatformDisplay = NULL;
++    }
++#endif
+ }
+ 
++#ifdef MOZ_X11
++Display*
++gfxLinuxGLPlatform::GetXDisplay()
++{
++    if (!sCachedPlatformDisplay) {
++        sCachedPlatformDisplay = XOpenDisplay(NULL);
++    }
++    return sCachedPlatformDisplay;
++}
++#endif
++
+ already_AddRefed<gfxASurface>
+ gfxLinuxGLPlatform::CreateOffscreenSurface(const gfxIntSize& size,
+                                       gfxASurface::gfxContentType contentType)
+ {
+     nsRefPtr<gfxASurface> newSurface;
+     newSurface = new gfxImageSurface(size, OptimalFormatForContent(contentType));
+ 
+     return newSurface.forget();
+diff --git a/gfx/thebes/gfxLinuxGLPlatform.h b/gfx/thebes/gfxLinuxGLPlatform.h
+--- a/gfx/thebes/gfxLinuxGLPlatform.h
++++ b/gfx/thebes/gfxLinuxGLPlatform.h
+@@ -4,16 +4,19 @@
+  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+ 
+ #ifndef GFX_PLATFORM_ANDROID_H
+ #define GFX_PLATFORM_ANDROID_H
+ 
+ #include "gfxPlatform.h"
+ #include "gfxUserFontSet.h"
+ #include "nsTArray.h"
++#ifdef MOZ_X11
++#include "X11/Xlib.h"
++#endif
+ 
+ namespace mozilla {
+     namespace dom {
+         class FontListEntry;
+     }
+ }
+ using mozilla::dom::FontListEntry;
+ 
+@@ -64,15 +67,19 @@ public:
+                                           gfxUserFontSet* aUserFontSet);
+ 
+     virtual bool FontHintingEnabled() MOZ_OVERRIDE;
+ 
+     FT_Library GetFTLibrary();
+ 
+     virtual int GetScreenDepth() const;
+ 
++#ifdef MOZ_X11
++    static Display* GetXDisplay();
++#endif
++
+ private:
+     int mScreenDepth;
+     gfxImageFormat mOffscreenFormat;
+ };
+ 
+ #endif /* GFX_PLATFORM_ANDROID_H */
+ 
+diff --git a/toolkit/library/Makefile.in b/toolkit/library/Makefile.in
+--- a/toolkit/library/Makefile.in
++++ b/toolkit/library/Makefile.in
+@@ -569,16 +569,19 @@ endif
+ ifeq (qt,$(MOZ_WIDGET_TOOLKIT))
+ EXTRA_DSO_LDOPTS += $(XLDFLAGS) $(XLIBS) $(XT_LIBS) $(MOZ_QT_LIBS)
+ EXTRA_DSO_LDOPTS += $(FT2_LIBS) $(MOZ_PANGO_LIBS)
+ EXTRA_DSO_LDOPTS += $(LIBXUL_DIST)/../widget/qt/faststartupqt/$(LIB_PREFIX)faststartupqt.$(LIB_SUFFIX)
+ endif
+ 
+ ifeq (linuxgl,$(MOZ_WIDGET_TOOLKIT))
+ EXTRA_DSO_LDOPTS += $(TK_LIBS) $(FT2_LIBS)
++ifdef MOZ_X11
++EXTRA_DSO_LDOPTS += $(XLDFLAGS) $(XLIBS) $(XT_LIBS) $(XEXT_LIBS)
++endif
+ endif
+ 
+ ifdef MOZ_TREE_FREETYPE
+ ifndef MOZ_TREE_CAIRO
+ EXTRA_DSO_LDOPTS += $(FT2_LIBS)
+ endif
+ endif
+ 
+diff --git a/toolkit/xre/nsAppRunner.cpp b/toolkit/xre/nsAppRunner.cpp
+--- a/toolkit/xre/nsAppRunner.cpp
++++ b/toolkit/xre/nsAppRunner.cpp
+@@ -218,16 +218,19 @@ static nsIProfileLock* gProfileLock;
+ int    gRestartArgc;
+ char **gRestartArgv;
+ 
+ #ifdef MOZ_WIDGET_QT
+ static int    gQtOnlyArgc;
+ static char **gQtOnlyArgv;
+ #endif
+ 
++#ifdef MOZ_X11
++#include "X11/Xlib.h"
++#endif
+ #if defined(MOZ_WIDGET_GTK)
+ #if defined(DEBUG) || defined(NS_BUILD_REFCNT_LOGGING) \
+   || defined(NS_TRACE_MALLOC)
+ #define CLEANUP_MEMORY 1
+ #define PANGO_ENABLE_BACKEND
+ #include <pango/pangofc-fontmap.h>
+ #endif
+ #include <gtk/gtk.h>
+diff --git a/widget/shared/nsShmImage.cpp b/widget/shared/nsShmImage.cpp
+--- a/widget/shared/nsShmImage.cpp
++++ b/widget/shared/nsShmImage.cpp
+@@ -59,16 +59,18 @@ nsShmImage::Create(const gfxIntSize& aSi
+     int xerror = 0;
+ #if defined(MOZ_WIDGET_GTK2) || defined(MOZ_WIDGET_GTK3)
+     gdk_error_trap_push();
+     Status attachOk = XShmAttach(dpy, &shm->mInfo);
+     XSync(dpy, False);
+     xerror = gdk_error_trap_pop();
+ #elif defined(MOZ_WIDGET_QT)
+     Status attachOk = XShmAttach(dpy, &shm->mInfo);
++#elif defined(MOZ_X11)
++    Status attachOk = XShmAttach(dpy, &shm->mInfo);
+ #endif
+ 
+     if (!attachOk || xerror) {
+         // Assume XShm isn't available, and don't attempt to use it
+         // again.
+         gShmAvailable = false;
+         return nullptr;
+     }
+@@ -179,16 +181,38 @@ nsShmImage::Put(QWidget* aWindow, QRect&
+     QRect inter = aRect.intersected(aWindow->rect());
+     XShmPutImage(dpy, d, gc, mImage,
+                  inter.x(), inter.y(),
+                  inter.x(), inter.y(),
+                  inter.width(), inter.height(),
+                  False);
+     XFreeGC(dpy, gc);
+ }
++#elif defined(MOZ_WIDGET_LINUXGL)
++void
++nsShmImage::Put(int win, const nsIntRegion& aRegion)
++{
++    Display* dpy = gfxLinuxGLPlatform::GetXDisplay();
++    Drawable d = win;
++    int dx = 0, dy = 0;
++
++    GC gc = XCreateGC(dpy, d, 0, nsnull);
++    // Avoid out of bounds painting
++    nsIntRegionRectIterator iter(aRegion);
++    const nsIntRect* r;
++    while ((r = iter.Next()) != nsnull) {
++      XShmPutImage(dpy, d, gc, mImage,
++                   r->x, r->y,
++                   r->x - dx, r->y - dy,
++                   r->width, r->height,
++                   False);
++
++    }
++    XFreeGC(dpy, gc);
++}
+ #endif
+ 
+ already_AddRefed<gfxASurface>
+ nsShmImage::EnsureShmImage(const gfxIntSize& aSize, Visual* aVisual, unsigned int aDepth,
+                nsRefPtr<nsShmImage>& aImage)
+ {
+     if (!aImage || aImage->Size() != aSize) {
+         // Because we XSync() after XShmAttach() to trap errors, we
+diff --git a/widget/shared/nsShmImage.h b/widget/shared/nsShmImage.h
+--- a/widget/shared/nsShmImage.h
++++ b/widget/shared/nsShmImage.h
+@@ -22,16 +22,18 @@
+ #include <X11/Xlib.h>
+ #include <X11/Xutil.h>
+ #include <X11/extensions/XShm.h>
+ 
+ #if defined(MOZ_WIDGET_GTK2) || defined(MOZ_WIDGET_GTK3)
+ #define DISPLAY gdk_x11_get_default_xdisplay
+ #elif defined(MOZ_WIDGET_QT)
+ #define DISPLAY mozilla::DefaultXDisplay
++#elif defined(MOZ_X11)
++#define DISPLAY mozilla::DefaultXDisplay
+ #endif
+ 
+ class QRect;
+ class QWidget;
+ 
+ class nsShmImage {
+     NS_INLINE_DECL_REFCOUNTING(nsShmImage)
+ 
+@@ -60,16 +62,18 @@ public:
+     already_AddRefed<gfxASurface> AsSurface();
+ 
+ #if defined(MOZ_WIDGET_GTK2)
+     void Put(GdkWindow* aWindow, GdkRectangle* aRects, GdkRectangle* aEnd);
+ #elif defined(MOZ_WIDGET_GTK3)
+     void Put(GdkWindow* aWindow, cairo_rectangle_list_t* aRects);
+ #elif defined(MOZ_WIDGET_QT)
+     void Put(QWidget* aWindow, QRect& aRect);
++#elif defined(MOZ_WIDGET_LINUXGL)
++    void Put(int win, const nsIntRegion& aRegion);
+ #endif
+ 
+     gfxIntSize Size() const { return mSize; }
+ 
+ private:
+     nsShmImage()
+         : mImage(nullptr)
+         , mXAttached(false)

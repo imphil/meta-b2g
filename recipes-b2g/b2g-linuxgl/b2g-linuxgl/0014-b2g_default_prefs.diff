@@ -1,0 +1,31 @@
+# HG changeset patch
+# Date 1359974796 -3600
+# Parent 4f98948d0976ea14feb2f1f191b2203d10b7005b
+# User Philipp Wagner <mail@philipp-wagner.com>
+
+Bug 731498 - LinuxGL port
+
+diff --git a/b2g/app/b2g.js b/b2g/app/b2g.js
+--- a/b2g/app/b2g.js
++++ b/b2g/app/b2g.js
+@@ -608,10 +608,20 @@ pref("font.size.inflation.disabledInMast
+ // Enable freeing dirty pages when minimizing memory; this reduces memory
+ // consumption when applications are sent to the background.
+ pref("memory.free_dirty_pages", true);
+ 
+ // UAProfile settings
+ pref("wap.UAProf.url", "");
+ pref("wap.UAProf.tagname", "x-wap-profile");
+ 
++pref("browser.manifestURL","app://system.gaiamobile.org/manifest.webapp");
++pref("browser.homescreenURL","app://system.gaiamobile.org/index.html");
++pref("browser.dom.window.dump.enabled", true);
++pref("browser.newtab.url", "about:blank");
++pref("layers.acceleration.draw-fps", true);
++pref("webgl.force-enabled", true);
++pref("webgl.default-no-alpha", true);
++pref("webgl.prefer-16bpp", true);
++
++
+ // Wait up to this much milliseconds when orientation changed
+ pref("layers.orientation.sync.timeout", 1000);

@@ -1,0 +1,1817 @@
+# HG changeset patch
+# Date 1359974754 -3600
+# User Philipp Wagner <mail@philipp-wagner.com>
+# Parent e5618dc78ef0a419284cdcda5e6bc6d609921228
+Bug 731498 - LinuxGL port
+
+diff --git a/toolkit/library/Makefile.in b/toolkit/library/Makefile.in
+--- a/toolkit/library/Makefile.in
++++ b/toolkit/library/Makefile.in
+@@ -291,16 +291,20 @@ ifeq ($(MOZ_WIDGET_TOOLKIT),android)
+ COMPONENT_LIBS += widget_android
+ STATIC_LIBS += skia_npapi
+ endif
+ 
+ ifeq ($(MOZ_WIDGET_TOOLKIT),gonk)
+ COMPONENT_LIBS += widget_gonk
+ endif
+ 
++ifeq ($(MOZ_WIDGET_TOOLKIT),linuxgl)
++COMPONENT_LIBS += widget_linuxgl
++endif
++
+ STATIC_LIBS += thebes gl ycbcr
+ 
+ ifdef MOZ_ENABLE_PROFILER_SPS
+ COMPONENT_LIBS += profiler
+ endif
+ 
+ ifeq (windows,$(MOZ_WIDGET_TOOLKIT))
+ COMPONENT_LIBS += widget_windows
+diff --git a/toolkit/library/nsStaticXULComponents.cpp b/toolkit/library/nsStaticXULComponents.cpp
+--- a/toolkit/library/nsStaticXULComponents.cpp
++++ b/toolkit/library/nsStaticXULComponents.cpp
+@@ -39,16 +39,18 @@
+ #elif defined(MOZ_WIDGET_GTK)
+ #  define WIDGET_MODULES MODULE(nsWidgetGtk2Module)
+ #elif defined(MOZ_WIDGET_QT)
+ #  define WIDGET_MODULES MODULE(nsWidgetQtModule)
+ #elif defined(MOZ_WIDGET_ANDROID)
+ #  define WIDGET_MODULES MODULE(nsWidgetAndroidModule)
+ #elif defined(MOZ_WIDGET_GONK)
+ #  define WIDGET_MODULES MODULE(nsWidgetGonkModule)
++#elif defined(MOZ_WIDGET_LINUXGL)
++#  define WIDGET_MODULES MODULE(nsWidgetLinuxGLModule)
+ #else
+ #  error Unknown widget module.
+ #endif
+ 
+ #ifdef ICON_DECODER
+ #define ICON_MODULE MODULE(nsIconDecoderModule)
+ #else
+ #define ICON_MODULE
+diff --git a/uriloader/exthandler/Makefile.in b/uriloader/exthandler/Makefile.in
+--- a/uriloader/exthandler/Makefile.in
++++ b/uriloader/exthandler/Makefile.in
+@@ -21,17 +21,17 @@ ifeq ($(MOZ_WIDGET_TOOLKIT),windows)
+ OSDIR		= win
+ else
+ ifeq ($(MOZ_WIDGET_TOOLKIT),cocoa)
+ OSDIR		= mac
+ else
+ ifeq ($(MOZ_WIDGET_TOOLKIT),android)
+ OSDIR		= android
+ else
+-ifeq ($(MOZ_WIDGET_TOOLKIT),gonk)
++ifneq (,$(filter gonk linuxgl,$(MOZ_WIDGET_TOOLKIT)))
+ OSDIR		= gonk
+ else
+ OSDIR		= unix
+ endif
+ endif
+ endif
+ endif
+ endif
+diff --git a/widget/Makefile.in b/widget/Makefile.in
+--- a/widget/Makefile.in
++++ b/widget/Makefile.in
+@@ -11,17 +11,17 @@ VPATH		= @srcdir@
+ MODULE = widget
+ XPIDL_MODULE	= widget
+ GRE_MODULE	= 1
+ 
+ include $(DEPTH)/config/autoconf.mk
+ 
+ DIRS = shared xpwidgets
+ 
+-ifneq (,$(filter os2 cocoa qt android gonk,$(MOZ_WIDGET_TOOLKIT)))
++ifneq (,$(filter os2 cocoa qt android gonk linuxgl,$(MOZ_WIDGET_TOOLKIT)))
+ DIRS += $(MOZ_WIDGET_TOOLKIT)
+ endif
+ 
+ ifeq ($(MOZ_WIDGET_TOOLKIT),windows)
+ DIRS += windows
+ endif
+ 
+ ifdef ENABLE_TESTS
+@@ -81,23 +81,17 @@ EXPORTS		+= \
+ 		nsIPrintDialogService.h \
+ 		$(NULL)
+ endif
+ 
+ ifeq ($(MOZ_WIDGET_TOOLKIT),os2)
+ EXPORTS		+= nsIDragSessionOS2.h
+ endif
+ 
+-ifneq (,$(filter android gonk,$(MOZ_WIDGET_TOOLKIT)))
+-EXPORTS		+= \
+-		nsIPrintDialogService.h \
+-		$(NULL)
+-endif
+-
+-ifneq (,$(filter qt gtk2,$(MOZ_WIDGET_TOOLKIT)))
++ifneq (,$(filter android gonk qt gtk2 linuxgl,$(MOZ_WIDGET_TOOLKIT)))
+ EXPORTS		+= \
+ 		nsIPrintDialogService.h \
+ 		$(NULL)
+ endif
+ 
+ XPIDLSRCS	= \
+ 		nsIAppShell.idl \
+ 		nsIFilePicker.idl \
+diff --git a/widget/gonk/Framebuffer.cpp b/widget/linuxgl/Framebuffer.cpp
+copy from widget/gonk/Framebuffer.cpp
+copy to widget/linuxgl/Framebuffer.cpp
+--- a/widget/gonk/Framebuffer.cpp
++++ b/widget/linuxgl/Framebuffer.cpp
+@@ -22,41 +22,41 @@
+ #include <stdlib.h>
+ #include <sys/ioctl.h>
+ #include <sys/mman.h>
+ #include <sys/types.h>
+ #include <unistd.h>
+ 
+ #include <vector>
+ 
+-#include "android/log.h"
+-
+ #include "Framebuffer.h"
+ #include "gfxContext.h"
+ #include "gfxImageSurface.h"
+ #include "gfxUtils.h"
+ #include "mozilla/FileUtils.h"
+ #include "nsTArray.h"
+ #include "nsRegion.h"
+ 
+-#define LOG(args...)  __android_log_print(ANDROID_LOG_INFO, "Gonk" , ## args)
++#define LOG(FMT, ARG...) \
++   printf("LinuxGL:%s:%s :%d: " FMT "\n", __FILE__, __FUNCTION__, __LINE__, ## ARG)
+ 
+ using namespace std;
+ 
+ namespace mozilla {
+ 
+ namespace Framebuffer {
+ 
+ static int sFd = -1;
+ static size_t sMappedSize;
+ static struct fb_var_screeninfo sVi;
+ static size_t sActiveBuffer;
+ typedef vector<nsRefPtr<gfxImageSurface> > BufferVector;
+ BufferVector* sBuffers;
+ static gfxIntSize *sScreenSize = nullptr;
++nsRefPtr<gfxImageSurface> backBuffer;
+ 
+ BufferVector& Buffers() { return *sBuffers; }
+ 
+ bool
+ SetGraphicsMode()
+ {
+     ScopedClose fd(open("/dev/tty0", O_RDWR | O_SYNC));
+     if (0 > fd.get()) {
+@@ -73,17 +73,17 @@ bool
+ Open()
+ {
+     if (0 <= sFd)
+         return true;
+ 
+     if (!SetGraphicsMode())
+         return false;
+ 
+-    ScopedClose fd(open("/dev/graphics/fb0", O_RDWR));
++    ScopedClose fd(open("/dev/fb0", O_RDWR));
+     if (0 > fd.get()) {
+         LOG("Error opening framebuffer device");
+         return false;
+     }
+ 
+     struct fb_fix_screeninfo fi;
+     if (0 > ioctl(fd.get(), FBIOGET_FSCREENINFO, &fi)) {
+         LOG("Error getting fixed screeninfo");
+@@ -101,49 +101,62 @@ Open()
+     if (MAP_FAILED == mem) {
+         LOG("Error mmap'ing framebuffer");
+         return false;
+     }
+ 
+     sFd = fd.get();
+     fd.forget();
+ 
+-    // The android porting doc requires a /dev/graphics/fb0 device
++    // The android porting doc requires a /dev/fb0 device
+     // that's double buffered with r5g6b5 format.  Hence the
+     // hard-coded numbers here.
+     gfxASurface::gfxImageFormat format = gfxASurface::ImageFormatRGB16_565;
+     int bytesPerPixel = gfxASurface::BytePerPixelFromFormat(format);
+     if (!sScreenSize) {
+         sScreenSize = new gfxIntSize(sVi.xres, sVi.yres);
+     }
+     long stride = fi.line_length;
+     size_t numFrameBytes = stride * sScreenSize->height;
+ 
+     sBuffers = new BufferVector(2);
+     unsigned char* data = static_cast<unsigned char*>(mem);
++    size_t totalBytes = 0;
+     for (size_t i = 0; i < 2; ++i, data += numFrameBytes) {
++      totalBytes += numFrameBytes;
++      if (totalBytes > sMappedSize) {
++          printf("Framebuffer double buffering is not available\n");
++          backBuffer = new gfxImageSurface(*sScreenSize, format);
++          Buffers()[i] = Buffers()[i-1];
++          continue;
++      }
+       memset(data, 0, numFrameBytes);
+       Buffers()[i] = new gfxImageSurface(data, *sScreenSize, stride, format);
+     }
+ 
+     // Clear the framebuffer to a known state.
+     Present(nsIntRect());
+ 
+     return true;
+ }
+ 
++int GetDepth()
++{
++    return sVi.bits_per_pixel;
++}
++
+ bool
+ GetSize(nsIntSize *aScreenSize) {
+     // If the framebuffer has been opened, we should always have the size.
+     if (sScreenSize) {
+         *aScreenSize = *sScreenSize;
+         return true;
+     }
+ 
+-    ScopedClose fd(open("/dev/graphics/fb0", O_RDWR));
++    ScopedClose fd(open("/dev/fb0", O_RDWR));
+     if (0 > fd.get()) {
+         LOG("Error opening framebuffer device");
+         return false;
+     }
+ 
+     if (0 > ioctl(fd.get(), FBIOGET_VSCREENINFO, &sVi)) {
+         LOG("Error getting variable screeninfo");
+         return false;
+@@ -158,26 +171,29 @@ void
+ Close()
+ {
+     if (0 > sFd)
+         return;
+ 
+     munmap(Buffers()[0]->Data(), sMappedSize);
+     delete sBuffers;
+     sBuffers = NULL;
++    backBuffer = NULL;
+     delete sScreenSize;
+     sScreenSize = NULL;
+ 
+     close(sFd);
+     sFd = -1;
+ }
+ 
+ gfxASurface*
+ BackBuffer()
+ {
++    if (backBuffer)
++        return backBuffer.get();
+     return Buffers()[!sActiveBuffer];
+ }
+ 
+ static gfxASurface*
+ FrontBuffer()
+ {
+     return Buffers()[sActiveBuffer];
+ }
+@@ -189,16 +205,26 @@ Present(const nsIntRegion& aUpdated)
+ 
+     sVi.yres_virtual = sVi.yres * 2;
+     sVi.yoffset = sActiveBuffer * sVi.yres;
+     sVi.bits_per_pixel = 16;
+     if (ioctl(sFd, FBIOPUT_VSCREENINFO, &sVi) < 0) {
+         LOG("Error presenting front buffer");
+     }
+ 
++    if (backBuffer) {
++        nsRefPtr<gfxContext> ctx = new gfxContext(FrontBuffer());
++        gfxUtils::PathFromRegion(ctx, aUpdated);
++        ctx->Clip();
++        ctx->SetSource(BackBuffer());
++        ctx->SetOperator(gfxContext::OPERATOR_SOURCE);
++        ctx->Paint(1.0);
++        return;
++    }
++
+     nsRefPtr<gfxContext> ctx = new gfxContext(BackBuffer());
+     gfxUtils::PathFromRegion(ctx, aUpdated);
+     ctx->Clip();
+     ctx->SetSource(FrontBuffer());
+     ctx->SetOperator(gfxContext::OPERATOR_SOURCE);
+     ctx->Paint(1.0);
+ }
+ 
+diff --git a/widget/gonk/Framebuffer.h b/widget/linuxgl/Framebuffer.h
+copy from widget/gonk/Framebuffer.h
+copy to widget/linuxgl/Framebuffer.h
+--- a/widget/gonk/Framebuffer.h
++++ b/widget/linuxgl/Framebuffer.h
+@@ -52,11 +52,13 @@ bool GetSize(nsIntSize *aScreenSize);
+ 
+ // Return the buffer to be drawn into, that will be the next frame.
+ gfxASurface* BackBuffer();
+ 
+ // Swap the front buffer for the back buffer.  |aUpdated| is the
+ // region of the back buffer that was repainted.
+ void Present(const nsIntRegion& aUpdated);
+ 
++int GetDepth();
++
+ } // namespace Framebuffer
+ 
+ } // namespace mozilla
+diff --git a/widget/linuxgl/Makefile.in b/widget/linuxgl/Makefile.in
+new file mode 100644
+--- /dev/null
++++ b/widget/linuxgl/Makefile.in
+@@ -0,0 +1,61 @@
++# Copyright 2012 Mozilla Foundation and Mozilla contributors
++#
++# Licensed under the Apache License, Version 2.0 (the "License");
++# you may not use this file except in compliance with the License.
++# You may obtain a copy of the License at
++#
++#     http://www.apache.org/licenses/LICENSE-2.0
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++DEPTH           = @DEPTH@
++topsrcdir       = @top_srcdir@
++srcdir          = @srcdir@
++VPATH           = \
++  $(srcdir) \
++  $(NULL)
++
++include $(DEPTH)/config/autoconf.mk
++
++EXPORTS         = OrientationObserver.h
++MODULE          = widget
++LIBRARY_NAME    = widget_linuxgl
++EXPORT_LIBRARY  = 1
++IS_COMPONENT    = 1
++MODULE_NAME     = nsWidgetLinuxGLModule
++GRE_MODULE      = 1
++LIBXUL_LIBRARY  = 1
++
++
++CPPSRCS	= \
++	Framebuffer.cpp \
++	nsAppShell.cpp \
++	nsWidgetFactory.cpp \
++	nsWindow.cpp \
++	nsLookAndFeel.cpp \
++	nsIdleServiceLinuxGL.cpp \
++	OrientationObserver.cpp \
++	$(NULL)
++
++SHARED_LIBRARY_LIBS = ../xpwidgets/libxpwidgets_s.a
++
++include $(topsrcdir)/config/rules.mk
++
++DEFINES += -D_IMPL_NS_WIDGET -DHAVE_OFF64_T
++
++LOCAL_INCLUDES += \
++	-I$(topsrcdir)/widget/xpwidgets \
++	-I$(topsrcdir)/widget/shared \
++	-I$(topsrcdir)/dom/system/android \
++	-I$(topsrcdir)/content/events/src \
++	-I$(topsrcdir)/gfx/skia/include/core \
++	-I$(topsrcdir)/gfx/skia/include/config \
++	-I$(srcdir) \
++	$(NULL)
++
++
++include $(topsrcdir)/ipc/chromium/chromium-config.mk
+diff --git a/widget/gonk/OrientationObserver.cpp b/widget/linuxgl/OrientationObserver.cpp
+copy from widget/gonk/OrientationObserver.cpp
+copy to widget/linuxgl/OrientationObserver.cpp
+diff --git a/widget/gonk/OrientationObserver.h b/widget/linuxgl/OrientationObserver.h
+copy from widget/gonk/OrientationObserver.h
+copy to widget/linuxgl/OrientationObserver.h
+diff --git a/widget/gonk/nsAppShell.cpp b/widget/linuxgl/nsAppShell.cpp
+copy from widget/gonk/nsAppShell.cpp
+copy to widget/linuxgl/nsAppShell.cpp
+--- a/widget/gonk/nsAppShell.cpp
++++ b/widget/linuxgl/nsAppShell.cpp
+@@ -35,33 +35,26 @@
+ #include "mozilla/Mutex.h"
+ #include "mozilla/Services.h"
+ #include "nsAppShell.h"
+ #include "nsDOMTouchEvent.h"
+ #include "nsGkAtoms.h"
+ #include "nsGUIEvent.h"
+ #include "nsIObserverService.h"
+ #include "nsIScreen.h"
+-#include "nsScreenManagerGonk.h"
++#include "nsScreenManagerLinuxGL.h"
+ #include "nsWindow.h"
+ #include "OrientationObserver.h"
+ #include "GonkMemoryPressureMonitoring.h"
+ 
+-#include "android/log.h"
+-#include "libui/EventHub.h"
+-#include "libui/InputReader.h"
+-#include "libui/InputDispatcher.h"
+-
+ #include "sampler.h"
+ 
+-#define LOG(args...)                                            \
+-    __android_log_print(ANDROID_LOG_INFO, "Gonk" , ## args)
+ #ifdef VERBOSE_LOG_ENABLED
+-# define VERBOSE_LOG(args...)                           \
+-    __android_log_print(ANDROID_LOG_INFO, "Gonk" , ## args)
++# define VERBOSE_LOG(FMT, ARG...)                           \
++    printf("LinuxGL:%s:%s :%d: " FMT "\n", __FILE__, __FUNCTION__, __LINE__, ## ARG)
+ #else
+ # define VERBOSE_LOG(args...)                   \
+     (void)0
+ #endif
+ 
+ using namespace android;
+ using namespace mozilla;
+ using namespace mozilla::dom;
+@@ -94,42 +87,16 @@ pipeHandler(int fd, FdHandler *data)
+ {
+     ssize_t len;
+     do {
+         char tmp[32];
+         len = read(fd, tmp, sizeof(tmp));
+     } while (len > 0);
+ }
+ 
+-struct Touch {
+-    int32_t id;
+-    PointerCoords coords;
+-};
+-
+-struct UserInputData {
+-    uint64_t timeMs;
+-    enum {
+-        MOTION_DATA,
+-        KEY_DATA
+-    } type;
+-    int32_t action;
+-    int32_t flags;
+-    int32_t metaState;
+-    union {
+-        struct {
+-            int32_t keyCode;
+-            int32_t scanCode;
+-        } key;
+-        struct {
+-            int32_t touchCount;
+-            Touch touches[MAX_POINTERS];
+-        } motion;
+-    };
+-};
+-
+ static void
+ sendMouseEvent(uint32_t msg, uint64_t timeMs, int x, int y, bool forwardToChildren)
+ {
+     nsMouseEvent event(true, msg, NULL,
+                        nsMouseEvent::eReal, nsMouseEvent::eNormal);
+ 
+     event.refPoint.x = x;
+     event.refPoint.y = y;
+@@ -138,483 +105,26 @@ sendMouseEvent(uint32_t msg, uint64_t ti
+     if (msg != NS_MOUSE_MOVE)
+         event.clickCount = 1;
+ 
+     event.mFlags.mNoCrossProcessBoundaryForwarding = !forwardToChildren;
+ 
+     nsWindow::DispatchInputEvent(event);
+ }
+ 
+-static void
+-addDOMTouch(UserInputData& data, nsTouchEvent& event, int i)
+-{
+-    const Touch& touch = data.motion.touches[i];
+-    event.touches.AppendElement(
+-        new nsDOMTouch(touch.id,
+-                       nsIntPoint(touch.coords.getX(), touch.coords.getY()),
+-                       nsIntPoint(touch.coords.getAxisValue(AMOTION_EVENT_AXIS_SIZE),
+-                                  touch.coords.getAxisValue(AMOTION_EVENT_AXIS_SIZE)),
+-                       0,
+-                       touch.coords.getAxisValue(AMOTION_EVENT_AXIS_PRESSURE))
+-    );
+-}
+-
+-static nsEventStatus
+-sendTouchEvent(UserInputData& data, bool* captured)
+-{
+-    uint32_t msg;
+-    int32_t action = data.action & AMOTION_EVENT_ACTION_MASK;
+-    switch (action) {
+-    case AMOTION_EVENT_ACTION_DOWN:
+-    case AMOTION_EVENT_ACTION_POINTER_DOWN:
+-        msg = NS_TOUCH_START;
+-        break;
+-    case AMOTION_EVENT_ACTION_MOVE:
+-        msg = NS_TOUCH_MOVE;
+-        break;
+-    case AMOTION_EVENT_ACTION_UP:
+-    case AMOTION_EVENT_ACTION_POINTER_UP:
+-        msg = NS_TOUCH_END;
+-        break;
+-    case AMOTION_EVENT_ACTION_OUTSIDE:
+-    case AMOTION_EVENT_ACTION_CANCEL:
+-        msg = NS_TOUCH_CANCEL;
+-        break;
+-    }
+-
+-    nsTouchEvent event(true, msg, NULL);
+-
+-    event.time = data.timeMs;
+-
+-    int32_t i;
+-    if (msg == NS_TOUCH_END) {
+-        i = data.action & AMOTION_EVENT_ACTION_POINTER_INDEX_MASK;
+-        i >>= AMOTION_EVENT_ACTION_POINTER_INDEX_SHIFT;
+-        addDOMTouch(data, event, i);
+-    } else {
+-        for (i = 0; i < data.motion.touchCount; ++i)
+-            addDOMTouch(data, event, i);
+-    }
+-
+-    return nsWindow::DispatchInputEvent(event, captured);
+-}
+-
+-static nsEventStatus
+-sendKeyEventWithMsg(uint32_t keyCode,
+-                    uint32_t msg,
+-                    uint64_t timeMs,
+-                    const EventFlags& flags)
+-{
+-    nsKeyEvent event(true, msg, NULL);
+-    event.keyCode = keyCode;
+-    event.location = nsIDOMKeyEvent::DOM_KEY_LOCATION_MOBILE;
+-    event.time = timeMs;
+-    event.mFlags.Union(flags);
+-    return nsWindow::DispatchInputEvent(event);
+-}
+-
+-static void
+-sendKeyEvent(uint32_t keyCode, bool down, uint64_t timeMs)
+-{
+-    EventFlags extraFlags;
+-    nsEventStatus status =
+-        sendKeyEventWithMsg(keyCode, down ? NS_KEY_DOWN : NS_KEY_UP, timeMs,
+-                            extraFlags);
+-    if (down) {
+-        extraFlags.mDefaultPrevented =
+-            (status == nsEventStatus_eConsumeNoDefault);
+-        sendKeyEventWithMsg(keyCode, NS_KEY_PRESS, timeMs, extraFlags);
+-    }
+-}
+-
+-// Defines kKeyMapping
+-#include "GonkKeyMapping.h"
+-
+-static void
+-maybeSendKeyEvent(int keyCode, bool pressed, uint64_t timeMs)
+-{
+-    if (keyCode < ArrayLength(kKeyMapping) && kKeyMapping[keyCode])
+-        sendKeyEvent(kKeyMapping[keyCode], pressed, timeMs);
+-    else
+-        VERBOSE_LOG("Got unknown key event code. type 0x%04x code 0x%04x value %d",
+-                    keyCode, pressed);
+-}
+-
+-class GeckoPointerController : public PointerControllerInterface {
+-    float mX;
+-    float mY;
+-    int32_t mButtonState;
+-    InputReaderConfiguration* mConfig;
+-public:
+-    GeckoPointerController(InputReaderConfiguration* config)
+-        : mX(0)
+-        , mY(0)
+-        , mButtonState(0)
+-        , mConfig(config)
+-    {}
+-
+-    virtual bool getBounds(float* outMinX, float* outMinY,
+-            float* outMaxX, float* outMaxY) const;
+-    virtual void move(float deltaX, float deltaY);
+-    virtual void setButtonState(int32_t buttonState);
+-    virtual int32_t getButtonState() const;
+-    virtual void setPosition(float x, float y);
+-    virtual void getPosition(float* outX, float* outY) const;
+-    virtual void fade(Transition transition) {}
+-    virtual void unfade(Transition transition) {}
+-    virtual void setPresentation(Presentation presentation) {}
+-    virtual void setSpots(const PointerCoords* spotCoords, const uint32_t* spotIdToIndex,
+-            BitSet32 spotIdBits) {}
+-    virtual void clearSpots() {}
+-};
+-
+-bool
+-GeckoPointerController::getBounds(float* outMinX,
+-                                  float* outMinY,
+-                                  float* outMaxX,
+-                                  float* outMaxY) const
+-{
+-    int32_t width, height, orientation;
+-
+-    mConfig->getDisplayInfo(0, false, &width, &height, &orientation);
+-
+-    *outMinX = *outMinY = 0;
+-    if (orientation == DISPLAY_ORIENTATION_90 ||
+-        orientation == DISPLAY_ORIENTATION_270) {
+-        *outMaxX = height;
+-        *outMaxY = width;
+-    } else {
+-        *outMaxX = width;
+-        *outMaxY = height;
+-    }
+-    return true;
+-}
+-
+-void
+-GeckoPointerController::move(float deltaX, float deltaY)
+-{
+-    float minX, minY, maxX, maxY;
+-    getBounds(&minX, &minY, &maxX, &maxY);
+-
+-    mX = clamped(mX + deltaX, minX, maxX);
+-    mY = clamped(mY + deltaY, minY, maxY);
+-}
+-
+-void
+-GeckoPointerController::setButtonState(int32_t buttonState)
+-{
+-    mButtonState = buttonState;
+-}
+-
+-int32_t
+-GeckoPointerController::getButtonState() const
+-{
+-    return mButtonState;
+-}
+-
+-void
+-GeckoPointerController::setPosition(float x, float y)
+-{
+-    mX = x;
+-    mY = y;
+-}
+-
+-void
+-GeckoPointerController::getPosition(float* outX, float* outY) const
+-{
+-    *outX = mX;
+-    *outY = mY;
+-}
+-
+-class GeckoInputReaderPolicy : public InputReaderPolicyInterface {
+-    InputReaderConfiguration mConfig;
+-public:
+-    GeckoInputReaderPolicy() {}
+-
+-    virtual void getReaderConfiguration(InputReaderConfiguration* outConfig);
+-    virtual sp<PointerControllerInterface> obtainPointerController(int32_t
+-deviceId)
+-    {
+-        return new GeckoPointerController(&mConfig);
+-    };
+-    void setDisplayInfo();
+-
+-protected:
+-    virtual ~GeckoInputReaderPolicy() {}
+-};
+-
+-class GeckoInputDispatcher : public InputDispatcherInterface {
+-public:
+-    GeckoInputDispatcher()
+-        : mQueueLock("GeckoInputDispatcher::mQueueMutex")
+-    {}
+-
+-    virtual void dump(String8& dump);
+-
+-    virtual void monitor() {}
+-
+-    // Called on the main thread
+-    virtual void dispatchOnce();
+-
+-    // notify* methods are called on the InputReaderThread
+-    virtual void notifyConfigurationChanged(const NotifyConfigurationChangedArgs* args);
+-    virtual void notifyKey(const NotifyKeyArgs* args);
+-    virtual void notifyMotion(const NotifyMotionArgs* args);
+-    virtual void notifySwitch(const NotifySwitchArgs* args);
+-    virtual void notifyDeviceReset(const NotifyDeviceResetArgs* args);
+-
+-    virtual int32_t injectInputEvent(const InputEvent* event,
+-            int32_t injectorPid, int32_t injectorUid, int32_t syncMode, int32_t timeoutMillis,
+-            uint32_t policyFlags);
+-
+-    virtual void setInputWindows(const Vector<sp<InputWindowHandle> >& inputWindowHandles);
+-    virtual void setFocusedApplication(const sp<InputApplicationHandle>& inputApplicationHandle);
+-
+-    virtual void setInputDispatchMode(bool enabled, bool frozen);
+-    virtual void setInputFilterEnabled(bool enabled) {}
+-    virtual bool transferTouchFocus(const sp<InputChannel>& fromChannel,
+-            const sp<InputChannel>& toChannel) { return true; }
+-
+-    virtual status_t registerInputChannel(const sp<InputChannel>& inputChannel,
+-            const sp<InputWindowHandle>& inputWindowHandle, bool monitor);
+-    virtual status_t unregisterInputChannel(const sp<InputChannel>& inputChannel);
+-
+-
+-
+-protected:
+-    virtual ~GeckoInputDispatcher() {}
+-
+-private:
+-    // mQueueLock should generally be locked while using mEventQueue.
+-    // UserInputData is pushed on on the InputReaderThread and
+-    // popped and dispatched on the main thread.
+-    mozilla::Mutex mQueueLock;
+-    std::queue<UserInputData> mEventQueue;
+-};
+-
+-// GeckoInputReaderPolicy
+-void
+-GeckoInputReaderPolicy::setDisplayInfo()
+-{
+-    MOZ_STATIC_ASSERT(nsIScreen::ROTATION_0_DEG ==
+-                      DISPLAY_ORIENTATION_0,
+-                      "Orientation enums not matched!");
+-    MOZ_STATIC_ASSERT(nsIScreen::ROTATION_90_DEG ==
+-                      DISPLAY_ORIENTATION_90,
+-                      "Orientation enums not matched!");
+-    MOZ_STATIC_ASSERT(nsIScreen::ROTATION_180_DEG ==
+-                      DISPLAY_ORIENTATION_180,
+-                      "Orientation enums not matched!");
+-    MOZ_STATIC_ASSERT(nsIScreen::ROTATION_270_DEG ==
+-                      DISPLAY_ORIENTATION_270,
+-                      "Orientation enums not matched!");
+-
+-    mConfig.setDisplayInfo(0, false, gScreenBounds.width, gScreenBounds.height, nsScreenGonk::GetRotation());
+-}
+-
+-void GeckoInputReaderPolicy::getReaderConfiguration(InputReaderConfiguration* outConfig)
+-{
+-    *outConfig = mConfig;
+-}
+-
+-
+-// GeckoInputDispatcher
+-void
+-GeckoInputDispatcher::dump(String8& dump)
+-{
+-}
+-
+-void
+-GeckoInputDispatcher::dispatchOnce()
+-{
+-    UserInputData data;
+-    {
+-        MutexAutoLock lock(mQueueLock);
+-        if (mEventQueue.empty())
+-            return;
+-        data = mEventQueue.front();
+-        mEventQueue.pop();
+-        if (!mEventQueue.empty())
+-            gAppShell->NotifyNativeEvent();
+-    }
+-
+-    switch (data.type) {
+-    case UserInputData::MOTION_DATA: {
+-        nsEventStatus status = nsEventStatus_eIgnore;
+-        if ((data.action & AMOTION_EVENT_ACTION_MASK) !=
+-            AMOTION_EVENT_ACTION_HOVER_MOVE) {
+-            bool captured;
+-            status = sendTouchEvent(data, &captured);
+-            if (captured) {
+-                return;
+-            }
+-        }
+-
+-        uint32_t msg;
+-        switch (data.action & AMOTION_EVENT_ACTION_MASK) {
+-        case AMOTION_EVENT_ACTION_DOWN:
+-            msg = NS_MOUSE_BUTTON_DOWN;
+-            break;
+-        case AMOTION_EVENT_ACTION_POINTER_DOWN:
+-        case AMOTION_EVENT_ACTION_POINTER_UP:
+-        case AMOTION_EVENT_ACTION_MOVE:
+-        case AMOTION_EVENT_ACTION_HOVER_MOVE:
+-            msg = NS_MOUSE_MOVE;
+-            break;
+-        case AMOTION_EVENT_ACTION_OUTSIDE:
+-        case AMOTION_EVENT_ACTION_CANCEL:
+-        case AMOTION_EVENT_ACTION_UP:
+-            msg = NS_MOUSE_BUTTON_UP;
+-            break;
+-        }
+-        sendMouseEvent(msg,
+-                       data.timeMs,
+-                       data.motion.touches[0].coords.getX(),
+-                       data.motion.touches[0].coords.getY(),
+-                       status != nsEventStatus_eConsumeNoDefault);
+-        break;
+-    }
+-    case UserInputData::KEY_DATA:
+-        maybeSendKeyEvent(data.key.keyCode,
+-                          data.action == AKEY_EVENT_ACTION_DOWN,
+-                          data.timeMs);
+-        break;
+-    }
+-}
+-
+-
+-void
+-GeckoInputDispatcher::notifyConfigurationChanged(const NotifyConfigurationChangedArgs*)
+-{
+-}
+-
+-static uint64_t
+-nanosecsToMillisecs(nsecs_t nsecs)
+-{
+-    return nsecs / 1000000;
+-}
+-
+-void
+-GeckoInputDispatcher::notifyKey(const NotifyKeyArgs* args)
+-{
+-    UserInputData data;
+-    data.timeMs = nanosecsToMillisecs(args->eventTime);
+-    data.type = UserInputData::KEY_DATA;
+-    data.action = args->action;
+-    data.flags = args->flags;
+-    data.metaState = args->metaState;
+-    data.key.keyCode = args->keyCode;
+-    data.key.scanCode = args->scanCode;
+-    {
+-        MutexAutoLock lock(mQueueLock);
+-        mEventQueue.push(data);
+-    }
+-    gAppShell->NotifyNativeEvent();
+-}
+-
+-
+-void
+-GeckoInputDispatcher::notifyMotion(const NotifyMotionArgs* args)
+-{
+-    UserInputData data;
+-    data.timeMs = nanosecsToMillisecs(args->eventTime);
+-    data.type = UserInputData::MOTION_DATA;
+-    data.action = args->action;
+-    data.flags = args->flags;
+-    data.metaState = args->metaState;
+-    MOZ_ASSERT(args->pointerCount <= MAX_POINTERS);
+-    data.motion.touchCount = args->pointerCount;
+-    for (uint32_t i = 0; i < args->pointerCount; ++i) {
+-        Touch& touch = data.motion.touches[i];
+-        touch.id = args->pointerProperties[i].id;
+-        memcpy(&touch.coords, &args->pointerCoords[i], sizeof(*args->pointerCoords));
+-    }
+-    {
+-        MutexAutoLock lock(mQueueLock);
+-        if (!mEventQueue.empty() &&
+-             mEventQueue.back().type == UserInputData::MOTION_DATA &&
+-           ((mEventQueue.back().action & AMOTION_EVENT_ACTION_MASK) ==
+-             AMOTION_EVENT_ACTION_MOVE ||
+-            (mEventQueue.back().action & AMOTION_EVENT_ACTION_MASK) ==
+-             AMOTION_EVENT_ACTION_HOVER_MOVE))
+-            mEventQueue.back() = data;
+-        else
+-            mEventQueue.push(data);
+-    }
+-    gAppShell->NotifyNativeEvent();
+-}
+-
+-
+-
+-void GeckoInputDispatcher::notifySwitch(const NotifySwitchArgs* args)
+-{
+-}
+-
+-void GeckoInputDispatcher::notifyDeviceReset(const NotifyDeviceResetArgs* args)
+-{
+-}
+-
+-int32_t GeckoInputDispatcher::injectInputEvent(
+-    const InputEvent* event,
+-    int32_t injectorPid, int32_t injectorUid, int32_t syncMode,
+-    int32_t timeoutMillis, uint32_t policyFlags)
+-{
+-    return INPUT_EVENT_INJECTION_SUCCEEDED;
+-}
+-
+-void
+-GeckoInputDispatcher::setInputWindows(const Vector<sp<InputWindowHandle> >& inputWindowHandles)
+-{
+-}
+-
+-void
+-GeckoInputDispatcher::setFocusedApplication(const sp<InputApplicationHandle>& inputApplicationHandle)
+-{
+-}
+-
+-void
+-GeckoInputDispatcher::setInputDispatchMode(bool enabled, bool frozen)
+-{
+-}
+-
+-status_t
+-GeckoInputDispatcher::registerInputChannel(const sp<InputChannel>& inputChannel,
+-                                           const sp<InputWindowHandle>& inputWindowHandle, bool monitor)
+-{
+-    return OK;
+-}
+-
+-status_t
+-GeckoInputDispatcher::unregisterInputChannel(const sp<InputChannel>& inputChannel)
+-{
+-    return OK;
+-}
+-
+ nsAppShell::nsAppShell()
+     : mNativeCallbackRequest(false)
+     , mHandlers()
+     , mEnableDraw(false)
+ {
+     gAppShell = this;
+ }
+ 
+ nsAppShell::~nsAppShell()
+ {
+-    // mReaderThread and mEventHub will both be null if InitInputDevices
+-    // is not called.
+-    if (mReaderThread.get()) {
+-        // We separate requestExit() and join() here so we can wake the EventHub's
+-        // input loop, and stop it from polling for input events
+-        mReaderThread->requestExit();
+-        mEventHub->wake();
+-
+-        status_t result = mReaderThread->requestExitAndWait();
+-        if (result)
+-            LOG("Could not stop reader thread - %d", result);
+-    }
+     gAppShell = NULL;
+ }
+ 
+ nsresult
+ nsAppShell::Init()
+ {
+     nsresult rv = nsBaseAppShell::Init();
+     NS_ENSURE_SUCCESS(rv, rv);
+@@ -663,28 +173,16 @@ nsAppShell::Exit()
+         obsServ->RemoveObserver(this, "browser-ui-startup-complete");
+     }
+     return nsBaseAppShell::Exit();
+ }
+ 
+ void
+ nsAppShell::InitInputDevices()
+ {
+-    mEventHub = new EventHub();
+-    mReaderPolicy = new GeckoInputReaderPolicy();
+-    mReaderPolicy->setDisplayInfo();
+-    mDispatcher = new GeckoInputDispatcher();
+-
+-    mReader = new InputReader(mEventHub, mReaderPolicy, mDispatcher);
+-    mReaderThread = new InputReaderThread(mReader);
+-
+-    status_t result = mReaderThread->run("InputReader", PRIORITY_URGENT_DISPLAY);
+-    if (result) {
+-        LOG("Failed to initialize InputReader thread, bad things are going to happen...");
+-    }
+ }
+ 
+ nsresult
+ nsAppShell::AddFdHandler(int fd, FdHandlerCallback handlerFunc,
+                          const char* deviceName)
+ {
+     epoll_event event = {
+         EPOLLIN,
+@@ -718,19 +216,16 @@ nsAppShell::ProcessNextNativeEvent(bool 
+         SAMPLE_LABEL("nsAppShell", "ProcessNextNativeEvent::Wait");
+         if ((event_count = epoll_wait(epollfd, events, 16,  mayWait ? -1 : 0)) <= 0)
+             return true;
+     }
+ 
+     for (int i = 0; i < event_count; i++)
+         mHandlers[events[i].data.u32].run();
+ 
+-    if (mDispatcher.get())
+-        mDispatcher->dispatchOnce();
+-
+     // NativeEventCallback always schedules more if it needs it
+     // so we can coalesce these.
+     // See the implementation in nsBaseAppShell.cpp for more info
+     if (mNativeCallbackRequest) {
+         mNativeCallbackRequest = false;
+         NativeEventCallback();
+     }
+ 
+@@ -755,13 +250,10 @@ nsAppShell::NotifyScreenInitialized()
+ 
+     // Getting the instance of OrientationObserver to initialize it.
+     OrientationObserver::GetInstance();
+ }
+ 
+ /* static */ void
+ nsAppShell::NotifyScreenRotation()
+ {
+-    gAppShell->mReaderPolicy->setDisplayInfo();
+-    gAppShell->mReader->requestRefreshConfiguration(InputReaderConfiguration::CHANGE_DISPLAY_INFO);
+-
+-    hal::NotifyScreenConfigurationChange(nsScreenGonk::GetConfiguration());
++    hal::NotifyScreenConfigurationChange(nsScreenLinuxGL::GetConfiguration());
+ }
+diff --git a/widget/gonk/nsAppShell.h b/widget/linuxgl/nsAppShell.h
+copy from widget/gonk/nsAppShell.h
+copy to widget/linuxgl/nsAppShell.h
+--- a/widget/gonk/nsAppShell.h
++++ b/widget/linuxgl/nsAppShell.h
+@@ -18,18 +18,16 @@
+ 
+ #include <queue>
+ 
+ #include "mozilla/Mutex.h"
+ #include "nsBaseAppShell.h"
+ #include "nsRect.h"
+ #include "nsTArray.h"
+ 
+-#include "utils/RefBase.h"
+-
+ namespace mozilla {
+ bool ProcessNextEvent();
+ void NotifyEvent();
+ }
+ 
+ extern bool gDrawRequest;
+ 
+ class FdHandler;
+@@ -46,22 +44,16 @@ public:
+     char name[64];
+     FdHandlerCallback func;
+     void run()
+     {
+         func(fd, this);
+     }
+ };
+ 
+-namespace android {
+-class EventHub;
+-class InputReader;
+-class InputReaderThread;
+-}
+-
+ class GeckoInputReaderPolicy;
+ class GeckoInputDispatcher;
+ 
+ class nsAppShell : public nsBaseAppShell {
+ public:
+     nsAppShell();
+ 
+     NS_DECL_ISUPPORTS_INHERITED
+@@ -91,18 +83,12 @@ private:
+     // This is somewhat racy but is perfectly safe given how the callback works
+     bool mNativeCallbackRequest;
+ 
+     // This gets flipped when we observe a browser-ui-startup-complete.
+     // browser-ui-startup-complete means that we're really ready to draw
+     // and can stop the boot animation
+     bool mEnableDraw;
+     nsTArray<FdHandler> mHandlers;
+-
+-    android::sp<android::EventHub>               mEventHub;
+-    android::sp<GeckoInputReaderPolicy> mReaderPolicy;
+-    android::sp<GeckoInputDispatcher>   mDispatcher;
+-    android::sp<android::InputReader>            mReader;
+-    android::sp<android::InputReaderThread>      mReaderThread;
+ };
+ 
+ #endif /* nsAppShell_h */
+ 
+diff --git a/widget/gonk/nsIdleServiceGonk.cpp b/widget/linuxgl/nsIdleServiceLinuxGL.cpp
+copy from widget/gonk/nsIdleServiceGonk.cpp
+copy to widget/linuxgl/nsIdleServiceLinuxGL.cpp
+--- a/widget/gonk/nsIdleServiceGonk.cpp
++++ b/widget/linuxgl/nsIdleServiceLinuxGL.cpp
+@@ -10,24 +10,24 @@
+  *
+  * Unless required by applicable law or agreed to in writing, software
+  * distributed under the License is distributed on an "AS IS" BASIS,
+  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+ 
+-#include "nsIdleServiceGonk.h"
++#include "nsIdleServiceLinuxGL.h"
+ #include "nsIServiceManager.h"
+ 
+-NS_IMPL_ISUPPORTS_INHERITED0(nsIdleServiceGonk, nsIdleService)
++NS_IMPL_ISUPPORTS_INHERITED0(nsIdleServiceLinuxGL, nsIdleService)
+ 
+ bool
+-nsIdleServiceGonk::PollIdleTime(uint32_t *aIdleTime)
++nsIdleServiceLinuxGL::PollIdleTime(uint32_t *aIdleTime)
+ {
+     return false;
+ }
+ 
+ bool
+-nsIdleServiceGonk::UsePollMode()
++nsIdleServiceLinuxGL::UsePollMode()
+ {
+     return false;
+ }
+diff --git a/widget/gonk/nsIdleServiceGonk.h b/widget/linuxgl/nsIdleServiceLinuxGL.h
+copy from widget/gonk/nsIdleServiceGonk.h
+copy to widget/linuxgl/nsIdleServiceLinuxGL.h
+--- a/widget/gonk/nsIdleServiceGonk.h
++++ b/widget/linuxgl/nsIdleServiceLinuxGL.h
+@@ -10,39 +10,39 @@
+  *
+  * Unless required by applicable law or agreed to in writing, software
+  * distributed under the License is distributed on an "AS IS" BASIS,
+  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+ 
+-#ifndef nsIdleServiceGonk_h__
+-#define nsIdleServiceGonk_h__
++#ifndef nsIdleServiceLinuxGL_h__
++#define nsIdleServiceLinuxGL_h__
+ 
+ #include "nsIdleService.h"
+ 
+-class nsIdleServiceGonk : public nsIdleService
++class nsIdleServiceLinuxGL : public nsIdleService
+ {
+ public:
+     NS_DECL_ISUPPORTS_INHERITED
+ 
+     bool PollIdleTime(uint32_t* aIdleTime);
+ 
+-    static already_AddRefed<nsIdleServiceGonk> GetInstance()
++    static already_AddRefed<nsIdleServiceLinuxGL> GetInstance()
+     {
+-        nsIdleServiceGonk* idleService =
+-            static_cast<nsIdleServiceGonk*>(nsIdleService::GetInstance().get());
++        nsIdleServiceLinuxGL* idleService =
++            static_cast<nsIdleServiceLinuxGL*>(nsIdleService::GetInstance().get());
+         if (!idleService) {
+-            idleService = new nsIdleServiceGonk();
++            idleService = new nsIdleServiceLinuxGL();
+             NS_ADDREF(idleService);
+         }
+ 
+         return idleService;
+     }
+ 
+ protected:
+-    nsIdleServiceGonk() { }
+-    virtual ~nsIdleServiceGonk() { }
++    nsIdleServiceLinuxGL() { }
++    virtual ~nsIdleServiceLinuxGL() { }
+     bool UsePollMode();
+ };
+ 
+-#endif // nsIdleServiceGonk_h__
++#endif // nsIdleServiceLinuxGL_h__
+diff --git a/widget/gonk/nsLookAndFeel.cpp b/widget/linuxgl/nsLookAndFeel.cpp
+copy from widget/gonk/nsLookAndFeel.cpp
+copy to widget/linuxgl/nsLookAndFeel.cpp
+diff --git a/widget/gonk/nsLookAndFeel.h b/widget/linuxgl/nsLookAndFeel.h
+copy from widget/gonk/nsLookAndFeel.h
+copy to widget/linuxgl/nsLookAndFeel.h
+diff --git a/widget/gonk/nsScreenManagerGonk.h b/widget/linuxgl/nsScreenManagerLinuxGL.h
+copy from widget/gonk/nsScreenManagerGonk.h
+copy to widget/linuxgl/nsScreenManagerLinuxGL.h
+--- a/widget/gonk/nsScreenManagerGonk.h
++++ b/widget/linuxgl/nsScreenManagerLinuxGL.h
+@@ -9,50 +9,50 @@
+  *
+  * Unless required by applicable law or agreed to in writing, software
+  * distributed under the License is distributed on an "AS IS" BASIS,
+  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+ 
+-#ifndef nsScreenManagerGonk_h___
+-#define nsScreenManagerGonk_h___
++#ifndef nsScreenManagerLinuxGL_h___
++#define nsScreenManagerLinuxGL_h___
+ 
+ #include "mozilla/Hal.h"
+ #include "nsCOMPtr.h"
+ 
+ #include "nsBaseScreen.h"
+ #include "nsIScreenManager.h"
+ 
+-class nsScreenGonk : public nsBaseScreen
++class nsScreenLinuxGL : public nsBaseScreen
+ {
+     typedef mozilla::hal::ScreenConfiguration ScreenConfiguration;
+ 
+ public:
+-    nsScreenGonk(void* nativeScreen);
+-    ~nsScreenGonk();
++    nsScreenLinuxGL(void* nativeScreen);
++    ~nsScreenLinuxGL();
+ 
+     NS_IMETHOD GetRect(int32_t* aLeft, int32_t* aTop, int32_t* aWidth, int32_t* aHeight);
+     NS_IMETHOD GetAvailRect(int32_t* aLeft, int32_t* aTop, int32_t* aWidth, int32_t* aHeight);
+     NS_IMETHOD GetPixelDepth(int32_t* aPixelDepth);
+     NS_IMETHOD GetColorDepth(int32_t* aColorDepth);
+     NS_IMETHOD GetRotation(uint32_t* aRotation);
+     NS_IMETHOD SetRotation(uint32_t  aRotation);
+ 
+     static uint32_t GetRotation();
+     static ScreenConfiguration GetConfiguration();
+ };
+ 
+-class nsScreenManagerGonk : public nsIScreenManager
++class nsScreenManagerLinuxGL : public nsIScreenManager
+ {
+ public:
+-    nsScreenManagerGonk();
+-    ~nsScreenManagerGonk();
++    nsScreenManagerLinuxGL();
++    ~nsScreenManagerLinuxGL();
+ 
+     NS_DECL_ISUPPORTS
+     NS_DECL_NSISCREENMANAGER
+ 
+ protected:
+     nsCOMPtr<nsIScreen> mOneScreen;
+ };
+ 
+-#endif /* nsScreenManagerGonk_h___ */
++#endif /* nsScreenManagerLinuxGL_h___ */
+diff --git a/widget/gonk/nsWidgetFactory.cpp b/widget/linuxgl/nsWidgetFactory.cpp
+copy from widget/gonk/nsWidgetFactory.cpp
+copy to widget/linuxgl/nsWidgetFactory.cpp
+--- a/widget/gonk/nsWidgetFactory.cpp
++++ b/widget/linuxgl/nsWidgetFactory.cpp
+@@ -20,82 +20,82 @@
+ 
+ #include "nsCOMPtr.h"
+ #include "nsWidgetsCID.h"
+ #include "nsAppShell.h"
+ 
+ #include "nsWindow.h"
+ #include "nsLookAndFeel.h"
+ #include "nsAppShellSingleton.h"
+-#include "nsScreenManagerGonk.h"
+-#include "nsIdleServiceGonk.h"
++#include "nsScreenManagerLinuxGL.h"
++#include "nsIdleServiceLinuxGL.h"
+ #include "nsTransferable.h"
+ 
+ #include "nsHTMLFormatConverter.h"
+ #include "nsXULAppAPI.h"
+ 
+ #include "PuppetWidget.h"
+ 
+ using namespace mozilla::widget;
+ 
+ NS_GENERIC_FACTORY_CONSTRUCTOR(nsWindow)
+-NS_GENERIC_FACTORY_CONSTRUCTOR(nsScreenManagerGonk)
++NS_GENERIC_FACTORY_CONSTRUCTOR(nsScreenManagerLinuxGL)
+ NS_GENERIC_FACTORY_CONSTRUCTOR(PuppetScreenManager)
+ NS_GENERIC_FACTORY_CONSTRUCTOR(nsHTMLFormatConverter)
+-NS_GENERIC_FACTORY_SINGLETON_CONSTRUCTOR(nsIdleServiceGonk, nsIdleServiceGonk::GetInstance)
++NS_GENERIC_FACTORY_SINGLETON_CONSTRUCTOR(nsIdleServiceLinuxGL, nsIdleServiceLinuxGL::GetInstance)
+ NS_GENERIC_FACTORY_CONSTRUCTOR(nsTransferable)
+ 
+ NS_DEFINE_NAMED_CID(NS_APPSHELL_CID);
+ NS_DEFINE_NAMED_CID(NS_WINDOW_CID);
+ NS_DEFINE_NAMED_CID(NS_CHILD_CID);
+ NS_DEFINE_NAMED_CID(NS_SCREENMANAGER_CID);
+ NS_DEFINE_NAMED_CID(NS_HTMLFORMATCONVERTER_CID);
+ NS_DEFINE_NAMED_CID(NS_IDLE_SERVICE_CID);
+ NS_DEFINE_NAMED_CID(NS_TRANSFERABLE_CID);
+ 
+ static nsresult
+ ScreenManagerConstructor(nsISupports *aOuter, REFNSIID aIID, void **aResult)
+ {
+     return (XRE_GetProcessType() == GeckoProcessType_Default) ?
+-        nsScreenManagerGonkConstructor(aOuter, aIID, aResult) :
++        nsScreenManagerLinuxGLConstructor(aOuter, aIID, aResult) :
+         PuppetScreenManagerConstructor(aOuter, aIID, aResult);
+ }
+ 
+ static const mozilla::Module::CIDEntry kWidgetCIDs[] = {
+     { &kNS_WINDOW_CID, false, NULL, nsWindowConstructor },
+     { &kNS_CHILD_CID, false, NULL, nsWindowConstructor },
+     { &kNS_APPSHELL_CID, false, NULL, nsAppShellConstructor },
+     { &kNS_SCREENMANAGER_CID, false, NULL, ScreenManagerConstructor },
+     { &kNS_HTMLFORMATCONVERTER_CID, false, NULL, nsHTMLFormatConverterConstructor },
+-    { &kNS_IDLE_SERVICE_CID, false, NULL, nsIdleServiceGonkConstructor },
++    { &kNS_IDLE_SERVICE_CID, false, NULL, nsIdleServiceLinuxGLConstructor },
+     { &kNS_TRANSFERABLE_CID, false, NULL, nsTransferableConstructor },
+     { NULL }
+ };
+ 
+ static const mozilla::Module::ContractIDEntry kWidgetContracts[] = {
+-    { "@mozilla.org/widgets/window/gonk;1", &kNS_WINDOW_CID },
+-    { "@mozilla.org/widgets/child_window/gonk;1", &kNS_CHILD_CID },
+-    { "@mozilla.org/widget/appshell/gonk;1", &kNS_APPSHELL_CID },
++    { "@mozilla.org/widgets/window/linuxgl;1", &kNS_WINDOW_CID },
++    { "@mozilla.org/widgets/child_window/linuxgl;1", &kNS_CHILD_CID },
++    { "@mozilla.org/widget/appshell/linuxgl;1", &kNS_APPSHELL_CID },
+     { "@mozilla.org/gfx/screenmanager;1", &kNS_SCREENMANAGER_CID },
+     { "@mozilla.org/widget/htmlformatconverter;1", &kNS_HTMLFORMATCONVERTER_CID },
+     { "@mozilla.org/widget/idleservice;1", &kNS_IDLE_SERVICE_CID },
+     { "@mozilla.org/widget/transferable;1", &kNS_TRANSFERABLE_CID },
+     { NULL }
+ };
+ 
+ static void
+-nsWidgetGonkModuleDtor()
++nsWidgetLinuxGLModuleDtor()
+ {
+     nsLookAndFeel::Shutdown();
+     nsAppShellShutdown();
+ }
+ 
+ static const mozilla::Module kWidgetModule = {
+     mozilla::Module::kVersion,
+     kWidgetCIDs,
+     kWidgetContracts,
+     NULL,
+     NULL,
+     nsAppShellInit,
+-    nsWidgetGonkModuleDtor
++    nsWidgetLinuxGLModuleDtor
+ };
+ 
+-NSMODULE_DEFN(nsWidgetGonkModule) = &kWidgetModule;
++NSMODULE_DEFN(nsWidgetLinuxGLModule) = &kWidgetModule;
+diff --git a/widget/gonk/nsWindow.cpp b/widget/linuxgl/nsWindow.cpp
+copy from widget/gonk/nsWindow.cpp
+copy to widget/linuxgl/nsWindow.cpp
+--- a/widget/gonk/nsWindow.cpp
++++ b/widget/linuxgl/nsWindow.cpp
+@@ -10,49 +10,43 @@
+  * distributed under the License is distributed on an "AS IS" BASIS,
+  * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  * See the License for the specific language governing permissions and
+  * limitations under the License.
+  */
+ 
+ #include "mozilla/DebugOnly.h"
+ 
+-#include <EGL/egl.h>
+-#include <EGL/eglext.h>
+-
+ #include <fcntl.h>
+-
+-#include "android/log.h"
+-#include "ui/FramebufferNativeWindow.h"
++#include <errno.h>
+ 
+ #include "mozilla/dom/TabParent.h"
+ #include "mozilla/Hal.h"
+ #include "mozilla/Preferences.h"
+ #include "mozilla/FileUtils.h"
+-#include "BootAnimation.h"
+ #include "Framebuffer.h"
+ #include "gfxContext.h"
+ #include "gfxPlatform.h"
+ #include "gfxUtils.h"
+ #include "GLContextProvider.h"
+ #include "HwcComposer2D.h"
+ #include "LayerManagerOGL.h"
+ #include "nsAutoPtr.h"
+ #include "nsAppShell.h"
+ #include "nsIdleService.h"
+-#include "nsScreenManagerGonk.h"
++#include "nsScreenManagerLinuxGL.h"
+ #include "nsTArray.h"
+ #include "nsWindow.h"
+ #include "nsIWidgetListener.h"
+-#include "cutils/properties.h"
+ #include "BasicLayers.h"
++#include "nsWindow.h"
+ 
+-#define LOG(args...)  __android_log_print(ANDROID_LOG_INFO, "Gonk" , ## args)
+-#define LOGW(args...) __android_log_print(ANDROID_LOG_WARN, "Gonk", ## args)
+-#define LOGE(args...) __android_log_print(ANDROID_LOG_ERROR, "Gonk", ## args)
++#define LOG(FMT, ARG...) printf("LinuxGL:%s:%s :%d: " FMT "\n", __FILE__, __FUNCTION__, __LINE__, ## ARG)
++#define LOGW(FMT, ARG...) printf("LinuxGL:%s:%s :%d: " FMT "\n", __FILE__, __FUNCTION__, __LINE__, ## ARG)
++#define LOGE(FMT, ARG...) printf("LinuxGL:%s:%s :%d: " FMT "\n", __FILE__, __FUNCTION__, __LINE__, ## ARG)
+ 
+ #define IS_TOPLEVEL() (mWindowType == eWindowType_toplevel || mWindowType == eWindowType_dialog)
+ 
+ using namespace mozilla;
+ using namespace mozilla::dom;
+ using namespace mozilla::hal;
+ using namespace mozilla::gl;
+ using namespace mozilla::layers;
+@@ -63,16 +57,17 @@ static uint32_t sScreenRotation;
+ static uint32_t sPhysicalScreenRotation;
+ static nsIntRect sVirtualBounds;
+ static gfxMatrix sRotationMatrix;
+ 
+ static nsRefPtr<GLContext> sGLContext;
+ static nsTArray<nsWindow *> sTopWindows;
+ static nsWindow *gWindowToRedraw = nullptr;
+ static nsWindow *gFocusedWindow = nullptr;
++static void *gNativeWindow = nullptr;
+ static bool sFramebufferOpen;
+ static bool sUsingOMTC;
+ static bool sUsingHwc;
+ static bool sScreenInitialized;
+ static nsRefPtr<gfxASurface> sOMTCSurface;
+ static pthread_t sFramebufferWatchThread;
+ 
+ namespace {
+@@ -116,25 +111,29 @@ static void *frameBufferWatcher(void *) 
+     nsRefPtr<ScreenOnOffEvent> mScreenOnEvent = new ScreenOnOffEvent(true);
+     nsRefPtr<ScreenOnOffEvent> mScreenOffEvent = new ScreenOnOffEvent(false);
+ 
+     while (true) {
+         // Cannot use epoll here because kSleepFile and kWakeFile are
+         // always ready to read and blocking.
+         {
+             ScopedClose fd(open(kSleepFile, O_RDONLY, 0));
++            if (fd.get() == 0xffffffff)
++                return nullptr;
+             do {
+                 len = read(fd.get(), &buf, 1);
+             } while (len < 0 && errno == EINTR);
+             NS_WARN_IF_FALSE(len >= 0, "WAIT_FOR_FB_SLEEP failed");
+             NS_DispatchToMainThread(mScreenOffEvent);
+         }
+ 
+         {
+             ScopedClose fd(open(kWakeFile, O_RDONLY, 0));
++            if (fd.get() == 0xffffffff)
++                return nullptr;
+             do {
+                 len = read(fd.get(), &buf, 1);
+             } while (len < 0 && errno == EINTR);
+             NS_WARN_IF_FALSE(len >= 0, "WAIT_FOR_FB_WAKE failed");
+             NS_DispatchToMainThread(mScreenOnEvent);
+         }
+     }
+ 
+@@ -154,21 +153,19 @@ nsWindow::nsWindow()
+ 
+         nsIntSize screenSize;
+         bool gotFB = Framebuffer::GetSize(&screenSize);
+         if (!gotFB) {
+             NS_RUNTIMEABORT("Failed to get size from framebuffer, aborting...");
+         }
+         gScreenBounds = nsIntRect(nsIntPoint(0, 0), screenSize);
+ 
+-        char propValue[PROPERTY_VALUE_MAX];
+-        property_get("ro.sf.hwrotation", propValue, "0");
+-        sPhysicalScreenRotation = atoi(propValue) / 90;
++        sPhysicalScreenRotation = 0;
+ 
+-        // Unlike nsScreenGonk::SetRotation(), only support 0 and 180 as there
++        // Unlike nsScreenLinuxGL::SetRotation(), only support 0 and 180 as there
+         // are no known screens that are mounted at 90 or 270 at the moment.
+         switch (sPhysicalScreenRotation) {
+         case nsIScreen::ROTATION_0_DEG:
+             break;
+         case nsIScreen::ROTATION_180_DEG:
+             sRotationMatrix.Translate(gfxPoint(gScreenBounds.width,
+                                                gScreenBounds.height));
+             sRotationMatrix.Rotate(M_PI);
+@@ -212,18 +209,16 @@ nsWindow::DoDraw(void)
+         return;
+     }
+ 
+     if (!gWindowToRedraw) {
+         LOG("  no window to draw, bailing");
+         return;
+     }
+ 
+-    StopBootAnimation();
+-
+     nsIntRegion region = gWindowToRedraw->mDirtyRegion;
+     gWindowToRedraw->mDirtyRegion.SetEmpty();
+ 
+     LayerManager* lm = gWindowToRedraw->GetLayerManager();
+     if (mozilla::layers::LAYERS_OPENGL == lm->GetBackendType()) {
+         LayerManagerOGL* oglm = static_cast<LayerManagerOGL*>(lm);
+         oglm->SetClippingRegion(region);
+         oglm->SetWorldTransform(sRotationMatrix);
+@@ -467,17 +462,17 @@ nsWindow::WidgetToScreenOffset()
+     return p;
+ }
+ 
+ void*
+ nsWindow::GetNativeData(uint32_t aDataType)
+ {
+     switch (aDataType) {
+     case NS_NATIVE_WINDOW:
+-        return NativeWindow();
++        return nullptr;
+     case NS_NATIVE_WIDGET:
+         return this;
+     }
+     return nullptr;
+ }
+ 
+ NS_IMETHODIMP
+ nsWindow::DispatchEvent(nsGUIEvent *aEvent, nsEventStatus &aStatus)
+@@ -528,34 +523,34 @@ nsWindow::MakeFullScreen(bool aFullScree
+                /*repaint*/true);
+     }
+     return NS_OK;
+ }
+ 
+ float
+ nsWindow::GetDPI()
+ {
+-    return NativeWindow()->xdpi;
++    return 96.0;
+ }
+ 
+ LayerManager *
+ nsWindow::GetLayerManager(PLayersChild* aShadowManager,
+                           LayersBackend aBackendHint,
+                           LayerManagerPersistence aPersistence,
+                           bool* aAllowRetaining)
+ {
+     if (aAllowRetaining)
+         *aAllowRetaining = true;
+     if (mLayerManager) {
+         // This layer manager might be used for painting outside of DoDraw(), so we need
+         // to set the correct rotation on it.
+         if (mLayerManager->GetBackendType() == LAYERS_BASIC) {
+             BasicLayerManager* manager =
+                 static_cast<BasicLayerManager*>(mLayerManager.get());
+-            manager->SetDefaultTargetConfiguration(mozilla::layers::BUFFER_NONE, 
++            manager->SetDefaultTargetConfiguration(mozilla::layers::BUFFER_NONE,
+                                                    ScreenRotation(EffectiveScreenRotation()));
+         }
+         return mLayerManager;
+     }
+ 
+     // Set mUseLayersAcceleration here to make it consistent with
+     // nsBaseWidget::GetLayerManager
+     mUseLayersAcceleration = ComputeShouldAccelerate(mUseLayersAcceleration);
+@@ -648,17 +643,17 @@ nsWindow::UserActivity()
+     }
+ }
+ 
+ uint32_t
+ nsWindow::GetGLFrameBufferFormat()
+ {
+     if (mLayerManager &&
+         mLayerManager->GetBackendType() == mozilla::layers::LAYERS_OPENGL) {
+-        // We directly map the hardware fb on Gonk.  The hardware fb
++        // We directly map the hardware fb on LinuxGL.  The hardware fb
+         // has RGB format.
+         return LOCAL_GL_RGB;
+     }
+     return LOCAL_GL_NONE;
+ }
+ 
+ nsIntRect
+ nsWindow::GetNaturalBounds()
+@@ -682,82 +677,76 @@ nsWindow::GetComposer2D()
+         return nullptr;
+     }
+     if (HwcComposer2D* hwc = HwcComposer2D::GetInstance()) {
+         return hwc->Initialized() ? hwc : nullptr;
+     }
+     return nullptr;
+ }
+ 
+-// nsScreenGonk.cpp
++// nsScreenLinuxGL.cpp
+ 
+-nsScreenGonk::nsScreenGonk(void *nativeScreen)
++nsScreenLinuxGL::nsScreenLinuxGL(void *nativeScreen)
+ {
+ }
+ 
+-nsScreenGonk::~nsScreenGonk()
++nsScreenLinuxGL::~nsScreenLinuxGL()
+ {
+ }
+ 
+ NS_IMETHODIMP
+-nsScreenGonk::GetRect(int32_t *outLeft,  int32_t *outTop,
++nsScreenLinuxGL::GetRect(int32_t *outLeft,  int32_t *outTop,
+                       int32_t *outWidth, int32_t *outHeight)
+ {
+     *outLeft = sVirtualBounds.x;
+     *outTop = sVirtualBounds.y;
+ 
+     *outWidth = sVirtualBounds.width;
+     *outHeight = sVirtualBounds.height;
+ 
+     return NS_OK;
+ }
+ 
+ NS_IMETHODIMP
+-nsScreenGonk::GetAvailRect(int32_t *outLeft,  int32_t *outTop,
++nsScreenLinuxGL::GetAvailRect(int32_t *outLeft,  int32_t *outTop,
+                            int32_t *outWidth, int32_t *outHeight)
+ {
+     return GetRect(outLeft, outTop, outWidth, outHeight);
+ }
+ 
+ static uint32_t
+ ColorDepth()
+ {
+-    switch (NativeWindow()->getDevice()->format) {
+-    case GGL_PIXEL_FORMAT_RGB_565:
+-        return 16;
+-    case GGL_PIXEL_FORMAT_RGBA_8888:
+-        return 32;
+-    }
+-    return 24; // GGL_PIXEL_FORMAT_RGBX_8888
++    return Framebuffer::GetDepth();
+ }
+ 
+ NS_IMETHODIMP
+-nsScreenGonk::GetPixelDepth(int32_t *aPixelDepth)
++nsScreenLinuxGL::GetPixelDepth(int32_t *aPixelDepth)
+ {
+     // XXX: this should actually return 32 when we're using 24-bit
+     // color, because we use RGBX.
+     *aPixelDepth = ColorDepth();
+     return NS_OK;
+ }
+ 
+ NS_IMETHODIMP
+-nsScreenGonk::GetColorDepth(int32_t *aColorDepth)
++nsScreenLinuxGL::GetColorDepth(int32_t *aColorDepth)
+ {
+     return GetPixelDepth(aColorDepth);
+ }
+ 
+ NS_IMETHODIMP
+-nsScreenGonk::GetRotation(uint32_t* aRotation)
++nsScreenLinuxGL::GetRotation(uint32_t* aRotation)
+ {
+     *aRotation = sScreenRotation;
+     return NS_OK;
+ }
+ 
+ NS_IMETHODIMP
+-nsScreenGonk::SetRotation(uint32_t aRotation)
++nsScreenLinuxGL::SetRotation(uint32_t aRotation)
+ {
+     if (!(aRotation <= ROTATION_270_DEG))
+         return NS_ERROR_ILLEGAL_VALUE;
+ 
+     if (sScreenRotation == aRotation)
+         return NS_OK;
+ 
+     sScreenRotation = aRotation;
+@@ -778,93 +767,93 @@ nsScreenGonk::SetRotation(uint32_t aRota
+                                sVirtualBounds.height,
+                                !i);
+ 
+     nsAppShell::NotifyScreenRotation();
+ 
+     return NS_OK;
+ }
+ 
+-// NB: This isn't gonk-specific, but gonk is the only widget backend
++// NB: This isn't LinuxGL-specific, but LinuxGL is the only widget backend
+ // that does this calculation itself, currently.
+ static ScreenOrientation
+ ComputeOrientation(uint32_t aRotation, const nsIntSize& aScreenSize)
+ {
+     bool naturallyPortrait = (aScreenSize.height > aScreenSize.width);
+     switch (aRotation) {
+     case nsIScreen::ROTATION_0_DEG:
+-        return (naturallyPortrait ? eScreenOrientation_PortraitPrimary : 
++        return (naturallyPortrait ? eScreenOrientation_PortraitPrimary :
+                 eScreenOrientation_LandscapePrimary);
+     case nsIScreen::ROTATION_90_DEG:
+         // Arbitrarily choosing 90deg to be primary "unnatural"
+         // rotation.
+-        return (naturallyPortrait ? eScreenOrientation_LandscapePrimary : 
++        return (naturallyPortrait ? eScreenOrientation_LandscapePrimary :
+                 eScreenOrientation_PortraitPrimary);
+     case nsIScreen::ROTATION_180_DEG:
+-        return (naturallyPortrait ? eScreenOrientation_PortraitSecondary : 
++        return (naturallyPortrait ? eScreenOrientation_PortraitSecondary :
+                 eScreenOrientation_LandscapeSecondary);
+     case nsIScreen::ROTATION_270_DEG:
+-        return (naturallyPortrait ? eScreenOrientation_LandscapeSecondary : 
++        return (naturallyPortrait ? eScreenOrientation_LandscapeSecondary :
+                 eScreenOrientation_PortraitSecondary);
+     default:
+-        MOZ_NOT_REACHED("Gonk screen must always have a known rotation");
++        MOZ_NOT_REACHED("LinuxGL screen must always have a known rotation");
+         return eScreenOrientation_None;
+     }
+ }
+ 
+ /*static*/ uint32_t
+-nsScreenGonk::GetRotation()
++nsScreenLinuxGL::GetRotation()
+ {
+     return sScreenRotation;
+ }
+ 
+ /*static*/ ScreenConfiguration
+-nsScreenGonk::GetConfiguration()
++nsScreenLinuxGL::GetConfiguration()
+ {
+     ScreenOrientation orientation = ComputeOrientation(sScreenRotation,
+                                                        gScreenBounds.Size());
+     uint32_t colorDepth = ColorDepth();
+     // NB: perpetuating colorDepth == pixelDepth illusion here, for
+     // consistency.
+     return ScreenConfiguration(sVirtualBounds, orientation,
+                                colorDepth, colorDepth);
+ }
+ 
+-NS_IMPL_ISUPPORTS1(nsScreenManagerGonk, nsIScreenManager)
++NS_IMPL_ISUPPORTS1(nsScreenManagerLinuxGL, nsIScreenManager)
+ 
+-nsScreenManagerGonk::nsScreenManagerGonk()
++nsScreenManagerLinuxGL::nsScreenManagerLinuxGL()
+ {
+-    mOneScreen = new nsScreenGonk(nullptr);
++    mOneScreen = new nsScreenLinuxGL(nullptr);
+ }
+ 
+-nsScreenManagerGonk::~nsScreenManagerGonk()
++nsScreenManagerLinuxGL::~nsScreenManagerLinuxGL()
+ {
+ }
+ 
+ NS_IMETHODIMP
+-nsScreenManagerGonk::GetPrimaryScreen(nsIScreen **outScreen)
++nsScreenManagerLinuxGL::GetPrimaryScreen(nsIScreen **outScreen)
+ {
+     NS_IF_ADDREF(*outScreen = mOneScreen.get());
+     return NS_OK;
+ }
+ 
+ NS_IMETHODIMP
+-nsScreenManagerGonk::ScreenForRect(int32_t inLeft,
++nsScreenManagerLinuxGL::ScreenForRect(int32_t inLeft,
+                                    int32_t inTop,
+                                    int32_t inWidth,
+                                    int32_t inHeight,
+                                    nsIScreen **outScreen)
+ {
+     return GetPrimaryScreen(outScreen);
+ }
+ 
+ NS_IMETHODIMP
+-nsScreenManagerGonk::ScreenForNativeWidget(void *aWidget, nsIScreen **outScreen)
++nsScreenManagerLinuxGL::ScreenForNativeWidget(void *aWidget, nsIScreen **outScreen)
+ {
+     return GetPrimaryScreen(outScreen);
+ }
+ 
+ NS_IMETHODIMP
+-nsScreenManagerGonk::GetNumberOfScreens(uint32_t *aNumberOfScreens)
++nsScreenManagerLinuxGL::GetNumberOfScreens(uint32_t *aNumberOfScreens)
+ {
+     *aNumberOfScreens = 1;
+     return NS_OK;
+ }
+diff --git a/widget/gonk/nsWindow.h b/widget/linuxgl/nsWindow.h
+copy from widget/gonk/nsWindow.h
+copy to widget/linuxgl/nsWindow.h
+diff --git a/widget/xpwidgets/Makefile.in b/widget/xpwidgets/Makefile.in
+--- a/widget/xpwidgets/Makefile.in
++++ b/widget/xpwidgets/Makefile.in
+@@ -49,17 +49,17 @@ ifdef MOZ_X11
+ CPPSRCS		+= \
+ 		GfxInfoX11.cpp
+ endif
+ 
+ ifneq (,$(filter os2 cocoa windows,$(MOZ_WIDGET_TOOLKIT)))
+ CPPSRCS += nsBaseClipboard.cpp
+ endif
+ 
+-ifneq (,$(filter qt gtk2 os2 cocoa windows android gonk,$(MOZ_WIDGET_TOOLKIT)))
++ifneq (,$(filter qt gtk2 os2 cocoa windows android gonk linuxgl,$(MOZ_WIDGET_TOOLKIT)))
+ CPPSRCS += nsBaseFilePicker.cpp
+ endif
+ 
+ ifneq (,$(filter qt gtk2 windows cocoa,$(MOZ_WIDGET_TOOLKIT)))
+ CPPSRCS += nsNativeTheme.cpp
+ endif
+ 
+ SHARED_LIBRARY_LIBS = ../shared/$(LIB_PREFIX)widget_shared.$(LIB_SUFFIX)

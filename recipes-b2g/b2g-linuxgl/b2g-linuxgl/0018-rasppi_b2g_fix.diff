@@ -1,0 +1,232 @@
+# HG changeset patch
+# Date 1359974811 -3600
+# User Philipp Wagner <mail@philipp-wagner.com>
+# Parent f7a9c47bc3ecf1494a692dd1f692302ce24fb6da
+Bug 731498 - LinuxGL port
+
+diff --git a/configure.in b/configure.in
+--- a/configure.in
++++ b/configure.in
+@@ -4673,16 +4673,28 @@ dnl ====================================
+ MOZ_ARG_WITH_BOOL(arm-kuser,
+ [  --with-arm-kuser         Use kuser helpers (Linux/ARM only -- requires kernel 2.6.13 or later)],
+     USE_ARM_KUSER=1,)
+ if test -n "$USE_ARM_KUSER"; then
+    AC_DEFINE(USE_ARM_KUSER)
+ fi
+ 
+ dnl ========================================================
++dnl broadcom
++dnl ========================================================
++MOZ_ARG_ENABLE_BOOL(broadcom,
++[  --enable-broadcom          Enable broadcom specific tricks.],
++    MOZ_BROADCOM=1,
++    MOZ_BROADCOM= )
++if test -n "$MOZ_BROADCOM"; then
++    AC_DEFINE(MOZ_BROADCOM)
++fi
++AC_SUBST(MOZ_BROADCOM)
++
++dnl ========================================================
+ dnl = startup-notification support module
+ dnl ========================================================
+ 
+ if test "$MOZ_ENABLE_GTK2"
+ then
+     MOZ_ENABLE_STARTUP_NOTIFICATION=
+ 
+     MOZ_ARG_ENABLE_BOOL(startup-notification,
+diff --git a/gfx/layers/opengl/LayerManagerOGL.cpp b/gfx/layers/opengl/LayerManagerOGL.cpp
+--- a/gfx/layers/opengl/LayerManagerOGL.cpp
++++ b/gfx/layers/opengl/LayerManagerOGL.cpp
+@@ -1435,19 +1435,22 @@ LayerManagerOGL::SetLayerProgramProjecti
+   }
+ }
+ 
+ static GLenum
+ GetFrameBufferInternalFormat(GLContext* gl,
+                              GLuint aCurrentFrameBuffer,
+                              nsIWidget* aWidget)
+ {
++#ifndef MOZ_BROADCOM
++  // Sounds like we should enable alpha for broadcom env
+   if (aCurrentFrameBuffer == 0) { // default framebuffer
+     return aWidget->GetGLFrameBufferFormat();
+   }
++#endif
+   return LOCAL_GL_RGBA;
+ }
+ 
+ void
+ LayerManagerOGL::CreateFBOWithTexture(const nsIntRect& aRect, InitMode aInit,
+                                       GLuint aCurrentFrameBuffer,
+                                       GLuint *aFBO, GLuint *aTexture)
+ {
+diff --git a/toolkit/library/Makefile.in b/toolkit/library/Makefile.in
+--- a/toolkit/library/Makefile.in
++++ b/toolkit/library/Makefile.in
+@@ -588,16 +588,20 @@ endif
+ ifdef MOZ_ENABLE_STARTUP_NOTIFICATION
+ EXTRA_DSO_LDOPTS += $(MOZ_STARTUP_NOTIFICATION_LIBS)
+ endif
+ 
+ ifdef MOZ_ENABLE_LIBPROXY
+ EXTRA_DSO_LDOPTS += $(MOZ_LIBPROXY_LIBS)
+ endif
+ 
++ifdef MOZ_BROADCOM
++EXTRA_DSO_LDOPTS += -Wl,-rpath-link,/opt/vc/lib -lGLESv2 -lEGL -lopenmaxil -lbcm_host -lvcos -lvchiq_arm
++endif
++
+ ifeq ($(OS_ARCH),SunOS)
+ ifdef GNU_CC
+ EXTRA_DSO_LDOPTS += -lelf
+ else
+ EXTRA_DSO_LDOPTS += -lelf -ldemangle
+ endif
+ endif
+ 
+diff --git a/widget/linuxgl/Makefile.in b/widget/linuxgl/Makefile.in
+--- a/widget/linuxgl/Makefile.in
++++ b/widget/linuxgl/Makefile.in
+@@ -51,12 +51,13 @@ DEFINES += -D_IMPL_NS_WIDGET -DHAVE_OFF6
+ LOCAL_INCLUDES += \
+ 	-I$(topsrcdir)/widget/xpwidgets \
+ 	-I$(topsrcdir)/widget/shared \
+ 	-I$(topsrcdir)/dom/system/android \
+ 	-I$(topsrcdir)/content/events/src \
+ 	-I$(topsrcdir)/gfx/skia/include/core \
+ 	-I$(topsrcdir)/gfx/skia/include/config \
+ 	-I$(srcdir) \
++	-I/opt/vc/include/interface/vcos/pthreads \
+ 	$(NULL)
+ 
+ 
+ include $(topsrcdir)/ipc/chromium/chromium-config.mk
+diff --git a/widget/linuxgl/nsWindow.cpp b/widget/linuxgl/nsWindow.cpp
+--- a/widget/linuxgl/nsWindow.cpp
++++ b/widget/linuxgl/nsWindow.cpp
+@@ -39,16 +39,20 @@
+ #include "nsIWidgetListener.h"
+ #include "BasicLayers.h"
+ #include "nsWindow.h"
+ #include "gfxLinuxGLPlatform.h"
+ #ifdef MOZ_X11
+ #include <X11/Xlib.h>
+ #include <X11/Xatom.h>
+ #endif
++#ifdef MOZ_BROADCOM
++#include <bcm_host.h>
++#include <EGL/egl.h>
++#endif
+ 
+ #define LOG(FMT, ARG...) printf("LinuxGL:%s:%s :%d: " FMT "\n", __FILE__, __FUNCTION__, __LINE__, ## ARG)
+ #define LOGW(FMT, ARG...) printf("LinuxGL:%s:%s :%d: " FMT "\n", __FILE__, __FUNCTION__, __LINE__, ## ARG)
+ #define LOGE(FMT, ARG...) printf("LinuxGL:%s:%s :%d: " FMT "\n", __FILE__, __FUNCTION__, __LINE__, ## ARG)
+ 
+ #define IS_TOPLEVEL() (mWindowType == eWindowType_toplevel || mWindowType == eWindowType_dialog)
+ 
+ using namespace mozilla;
+@@ -71,16 +75,21 @@ static nsWindow *gFocusedWindow = nullpt
+ static void *gNativeWindow = nullptr;
+ static bool sFramebufferOpen;
+ static bool sUsingOMTC;
+ static bool sUsingHwc;
+ static bool sScreenInitialized;
+ static nsRefPtr<gfxASurface> sOMTCSurface;
+ static pthread_t sFramebufferWatchThread;
+ static bool sMayCreateNativeWindow = false;
++static bool sPlatformInitialized = false;
++#ifdef MOZ_BROADCOM
++static DISPMANX_DISPLAY_HANDLE_T dispman_display = 0;
++static DISPMANX_UPDATE_HANDLE_T dispman_update = 0;
++#endif
+ 
+ #include <sys/time.h>
+ class MozFPSCounter
+ {
+ public:
+    MozFPSCounter(const char* aEnv = NULL, const char* aMsg = NULL, int aFreq = 5)
+      : mEnv(aEnv), mMsg(aMsg), mFreq(aFreq), mFpsCounter(0), mEnabled(true)
+    {
+@@ -128,18 +137,62 @@ typedef struct xinfo_t
+   int xres;
+   int yres;
+   Visual* visual;
+   nsRefPtr<gfxASurface> backSurface;
+ } xinfo;
+ static xinfo xInfo;
+ #endif
+ 
++static void InitPlatform()
++{
++    if (!sPlatformInitialized) {
++#ifdef MOZ_BROADCOM
++        bcm_host_init();
++        dispman_display = vc_dispmanx_display_open(0/* LCD */);
++
++        VC_RECT_T dst_rect;
++        dst_rect.x = 0;
++        dst_rect.y = 0;
++        dst_rect.width = gScreenBounds.width;
++        dst_rect.height = gScreenBounds.height;
++
++        VC_RECT_T src_rect;
++        src_rect.x = 0;
++        src_rect.y = 0;
++        src_rect.width = gScreenBounds.width << 16;
++        src_rect.height = gScreenBounds.height << 16;
++
++        dispman_update = vc_dispmanx_update_start(0);
++
++        VC_DISPMANX_ALPHA_T alpha;
++        alpha.flags = (DISPMANX_FLAGS_ALPHA_T)(DISPMANX_FLAGS_ALPHA_FROM_SOURCE | DISPMANX_FLAGS_ALPHA_FIXED_ALL_PIXELS);
++        alpha.opacity = 0xFF;
++        alpha.mask = 0;
++
++        DISPMANX_ELEMENT_HANDLE_T dispman_element = vc_dispmanx_element_add(
++                dispman_update, dispman_display, 0, &dst_rect, 0, &src_rect,
++                DISPMANX_PROTECTION_NONE, &alpha, (DISPMANX_CLAMP_T *)NULL, (DISPMANX_TRANSFORM_T)0);
++
++        vc_dispmanx_update_submit_sync(dispman_update);
++
++        EGL_DISPMANX_WINDOW_T *eglWindow = new EGL_DISPMANX_WINDOW_T;
++        eglWindow->element = dispman_element;
++        eglWindow->width = gScreenBounds.width;
++        eglWindow->height = gScreenBounds.height;
++        gNativeWindow = eglWindow;
++        LOG("eglW:%p, sz[%i,%i], win:%p\n", eglWindow, gScreenBounds.width, gScreenBounds.height, gNativeWindow);
++#endif
++        sPlatformInitialized = true;
++    }
++}
++
+ void* NativeWindow()
+ {
++    InitPlatform();
+     if (!gNativeWindow && sMayCreateNativeWindow) {
+ #ifdef MOZ_X11
+         xInfo.dpy = gfxLinuxGLPlatform::GetXDisplay();
+         if (!xInfo.dpy) {
+             printf("X display init failed\n");
+             return false;
+         }
+ 
+@@ -292,16 +345,17 @@ nsWindow::nsWindow()
+         sUsingOMTC = UseOffMainThreadCompositing();
+         sUsingHwc = Preferences::GetBool("layers.composer2d.enabled", false);
+ 
+         if (sUsingOMTC) {
+           sOMTCSurface = new gfxImageSurface(gfxIntSize(1, 1),
+                                              gfxASurface::ImageFormatRGB24);
+         }
+     }
++    InitPlatform();
+ }
+ 
+ nsWindow::~nsWindow()
+ {
+ }
+ 
+ void
+ nsWindow::DoDraw(void)

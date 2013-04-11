@@ -1,0 +1,147 @@
+# HG changeset patch
+# Date 1359974784 -3600
+# User Philipp Wagner <mail@philipp-wagner.com>
+# Parent d837819a73d838fa2b95b217caac292b489b703b
+Bug 731498 - LinuxGL port
+
+diff --git a/widget/linuxgl/nsWindow.cpp b/widget/linuxgl/nsWindow.cpp
+--- a/widget/linuxgl/nsWindow.cpp
++++ b/widget/linuxgl/nsWindow.cpp
+@@ -33,16 +33,21 @@
+ #include "nsAppShell.h"
+ #include "nsIdleService.h"
+ #include "nsScreenManagerLinuxGL.h"
+ #include "nsTArray.h"
+ #include "nsWindow.h"
+ #include "nsIWidgetListener.h"
+ #include "BasicLayers.h"
+ #include "nsWindow.h"
++#include "gfxLinuxGLPlatform.h"
++#ifdef MOZ_X11
++#include <X11/Xlib.h>
++#include <X11/Xatom.h>
++#endif
+ 
+ #define LOG(FMT, ARG...) printf("LinuxGL:%s:%s :%d: " FMT "\n", __FILE__, __FUNCTION__, __LINE__, ## ARG)
+ #define LOGW(FMT, ARG...) printf("LinuxGL:%s:%s :%d: " FMT "\n", __FILE__, __FUNCTION__, __LINE__, ## ARG)
+ #define LOGE(FMT, ARG...) printf("LinuxGL:%s:%s :%d: " FMT "\n", __FILE__, __FUNCTION__, __LINE__, ## ARG)
+ 
+ #define IS_TOPLEVEL() (mWindowType == eWindowType_toplevel || mWindowType == eWindowType_dialog)
+ 
+ using namespace mozilla;
+@@ -64,19 +69,78 @@ static nsWindow *gWindowToRedraw = nullp
+ static nsWindow *gFocusedWindow = nullptr;
+ static void *gNativeWindow = nullptr;
+ static bool sFramebufferOpen;
+ static bool sUsingOMTC;
+ static bool sUsingHwc;
+ static bool sScreenInitialized;
+ static nsRefPtr<gfxASurface> sOMTCSurface;
+ static pthread_t sFramebufferWatchThread;
++static bool sMayCreateNativeWindow = false;
+ 
+ namespace {
+ 
++#ifdef MOZ_X11
++typedef struct xinfo_t
++{
++  Display *dpy;
++  Window win;
++  GC gc;
++
++  int screen;
++  int depth;
++  int xres;
++  int yres;
++  Visual* visual;
++  nsRefPtr<gfxASurface> backSurface;
++} xinfo;
++static xinfo xInfo;
++#endif
++
++void* NativeWindow()
++{
++    if (!gNativeWindow && sMayCreateNativeWindow) {
++#ifdef MOZ_X11
++        xInfo.dpy = gfxLinuxGLPlatform::GetXDisplay();
++        if (!xInfo.dpy) {
++            printf("X display init failed\n");
++            return false;
++        }
++
++        xInfo.screen = DefaultScreen(xInfo.dpy);
++        xInfo.depth = DefaultDepth(xInfo.dpy, xInfo.screen);
++        xInfo.xres = ScreenOfDisplay(xInfo.dpy, xInfo.screen)->width;
++        xInfo.yres = ScreenOfDisplay(xInfo.dpy, xInfo.screen)->height;
++
++        Atom fullscreen_atom;
++        xInfo.win = XCreateSimpleWindow(xInfo.dpy,
++                                        RootWindow(xInfo.dpy, xInfo.screen),
++                                        0, 0,
++                                        xInfo.xres,
++                                        xInfo.yres,
++                                        0, 0, 0);
++
++        fullscreen_atom = XInternAtom(xInfo.dpy,"_NET_WM_STATE_FULLSCREEN", False);
++        XChangeProperty(xInfo.dpy, xInfo.win, XInternAtom(xInfo.dpy, "_NET_WM_STATE", False), XA_ATOM, 32,
++                        PropModeReplace,(unsigned char *) &fullscreen_atom, 1);
++        XSelectInput(xInfo.dpy, xInfo.win,
++                     VisibilityNotify | ExposureMask |
++                     KeyPressMask | KeyReleaseMask |
++                     ButtonPressMask | ButtonReleaseMask |
++                     PointerMotionMask | FocusChangeMask);
++        XMapWindow(xInfo.dpy, xInfo.win);
++        xInfo.visual = 0;
++
++        XFlush(xInfo.dpy);
++        gNativeWindow = (void*)xInfo.win;
++#endif
++    }
++    return gNativeWindow;
++}
++
+ static uint32_t
+ EffectiveScreenRotation()
+ {
+     return (sScreenRotation + sPhysicalScreenRotation) % (360 / 90);
+ }
+ 
+ class ScreenOnOffEvent : public nsRunnable {
+ public:
+@@ -548,33 +612,35 @@ nsWindow::GetLayerManager(PLayersChild* 
+             manager->SetDefaultTargetConfiguration(mozilla::layers::BUFFER_NONE,
+                                                    ScreenRotation(EffectiveScreenRotation()));
+         }
+         return mLayerManager;
+     }
+ 
+     // Set mUseLayersAcceleration here to make it consistent with
+     // nsBaseWidget::GetLayerManager
+-    mUseLayersAcceleration = ComputeShouldAccelerate(mUseLayersAcceleration);
++    mUseLayersAcceleration = getenv("SWRENDER") ? false : ComputeShouldAccelerate(mUseLayersAcceleration);
+     nsWindow *topWindow = sTopWindows[0];
+ 
+     if (!topWindow) {
+         LOGW(" -- no topwindow\n");
+         return nullptr;
+     }
+ 
+     if (sUsingOMTC) {
++        sMayCreateNativeWindow = true;
+         CreateCompositor();
+         if (mLayerManager)
+             return mLayerManager;
+     }
+ 
+     if (mUseLayersAcceleration) {
+         DebugOnly<nsIntRect> fbBounds = gScreenBounds;
+         if (!sGLContext) {
++            sMayCreateNativeWindow = true;
+             sGLContext = GLContextProvider::CreateForWindow(this);
+         }
+ 
+         MOZ_ASSERT(fbBounds.value == gScreenBounds);
+         if (sGLContext) {
+             nsRefPtr<LayerManagerOGL> layerManager = new LayerManagerOGL(this);
+ 
+             if (layerManager->Initialize(sGLContext)) {

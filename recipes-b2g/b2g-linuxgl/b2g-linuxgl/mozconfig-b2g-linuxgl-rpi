@@ -1,0 +1,53 @@
+ac_add_options --enable-application=b2g
+
+# make options
+# build type: optimized release build
+ac_add_options --disable-debug
+ac_add_options --disable-tests
+# -Wno-psabi is required to silcence a GCC warning:
+# "note: the mangling of 'va_list' has changed in GCC 4.4"
+ac_add_options --enable-optimize
+ac_add_options --enable-mobile-optimize
+
+# build type: debug build
+#ac_add_options --enable-debug
+#ac_add_options --disable-optimize
+
+# OpenEmbedded strips the installed binaries itself if necessary, but needs
+# the unstripped ones for debugging.
+# This prevents the OpenEmbedded warning:
+# WARNING: File '/usr/lib/b2g/libplds4.so' from b2g-linuxgl-rpi was already stripped, this will prevent future debugging!
+ac_add_options --disable-strip
+ac_add_options --disable-install-strip
+
+# install paths
+ac_add_options --prefix=@prefix@
+
+# target system
+ac_add_options --with-arm-kuser
+
+# libraries
+ac_add_options --disable-dbus
+ac_add_options --with-system-zlib
+# currently required because fontconfig is missing when linking libxul.xo
+# XXX: figure out why
+ac_add_options --disable-pango
+ac_add_options --enable-tree-freetype
+ac_add_options --enable-udev
+
+# graphics/toolkit
+ac_add_options --enable-default-toolkit=cairo-linuxgl
+ac_add_options --without-x
+ac_add_options --with-gl-provider=EGL
+# added by romaxa for Raspberry PI
+ac_add_options --enable-broadcom
+
+# used/unused features
+ac_add_options --disable-necko-wifi
+ac_add_options --disable-crashreporter
+# disabled for compile errors
+# tries to build SSE2 optimized code, which obviously does not work
+ac_add_options --disable-webrtc
+# not working (gives compile error)
+ac_add_options --disable-elf-hack
+

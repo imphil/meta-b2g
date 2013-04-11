@@ -1,0 +1,294 @@
+# HG changeset patch
+# Date 1359974803 -3600
+# User Philipp Wagner <mail@philipp-wagner.com>
+# Parent 9cd8eb98f55ab885e47bca02ad8267f95ac25fc6
+Bug 731498 - LinuxGL port
+
+diff --git a/gfx/layers/ipc/CompositorParent.cpp b/gfx/layers/ipc/CompositorParent.cpp
+--- a/gfx/layers/ipc/CompositorParent.cpp
++++ b/gfx/layers/ipc/CompositorParent.cpp
+@@ -177,16 +177,17 @@ CompositorParent::CompositorParent(nsIWi
+   , mXScale(1.0)
+   , mYScale(1.0)
+   , mIsFirstPaint(false)
+   , mLayersUpdated(false)
+   , mRenderToEGLSurface(aRenderToEGLSurface)
+   , mEGLSurfaceSize(aSurfaceWidth, aSurfaceHeight)
+   , mPauseCompositionMonitor("PauseCompositionMonitor")
+   , mResumeCompositionMonitor("ResumeCompositionMonitor")
++  , mCursor(-1, -1)
+   , mOverrideComposeReadiness(false)
+   , mForceCompositionTask(nullptr)
+ {
+   NS_ABORT_IF_FALSE(sCompositorThread != nullptr || sCompositorThreadID,
+                     "The compositor thread must be Initialized before instanciating a COmpositorParent.");
+   MOZ_COUNT_CTOR(CompositorParent);
+   mCompositorID = 0;
+   // FIXME: This holds on the the fact that right now the only thing that 
+@@ -574,16 +575,24 @@ private:
+   Layer* mRoot;
+   TargetConfig mTargetConfig;
+   bool mReadyForCompose;
+ 
+   AutoResolveRefLayers(const AutoResolveRefLayers&) MOZ_DELETE;
+   AutoResolveRefLayers& operator=(const AutoResolveRefLayers&) MOZ_DELETE;
+ };
+ 
++bool
++CompositorParent::RecvUpdateCursor(const nsIntPoint& aCursor)
++{
++  mCursor = aCursor;
++  ScheduleComposition();
++  return true;
++}
++
+ void
+ CompositorParent::Composite()
+ {
+   NS_ABORT_IF_FALSE(CompositorThreadID() == PlatformThread::CurrentId(),
+                     "Composite can only be called on the compositor thread");
+   mCurrentCompositeTask = nullptr;
+ 
+   mLastCompose = TimeStamp::Now();
+@@ -605,22 +614,24 @@ CompositorParent::Composite()
+ 
+   bool requestNextFrame = TransformShadowTree(mLastCompose);
+   if (requestNextFrame) {
+     ScheduleComposition();
+   }
+ 
+   RenderTraceLayers(layer, "0000");
+ 
+-  if (LAYERS_OPENGL == mLayerManager->GetBackendType() &&
+-      !mTargetConfig.naturalBounds().IsEmpty()) {
++  if (LAYERS_OPENGL == mLayerManager->GetBackendType()) {
+     LayerManagerOGL* lm = static_cast<LayerManagerOGL*>(mLayerManager.get());
+-    lm->SetWorldTransform(
+-      ComputeGLTransformForRotation(mTargetConfig.naturalBounds(),
+-                                    mTargetConfig.rotation()));
++    lm->SetPointerIndicator(mCursor.x, mCursor.y);
++    if (!mTargetConfig.naturalBounds().IsEmpty()) {
++      lm->SetWorldTransform(
++        ComputeGLTransformForRotation(mTargetConfig.naturalBounds(),
++                                      mTargetConfig.rotation()));
++    }
+   }
+   mLayerManager->EndEmptyTransaction();
+ 
+ #ifdef COMPOSITOR_PERFORMANCE_WARNING
+   if (mExpectedComposeTime + TimeDuration::FromMilliseconds(15) < TimeStamp::Now()) {
+     printf_stderr("Compositor: Composite took %i ms.\n",
+                   15 + (int)(TimeStamp::Now() - mExpectedComposeTime).ToMilliseconds());
+   }
+@@ -1295,16 +1306,17 @@ public:
+     MaybeMagicGrallocBufferHandle*) MOZ_OVERRIDE
+   { return nullptr; }
+   virtual bool DeallocPGrallocBuffer(PGrallocBufferParent*)
+   { return false; }
+ 
+   virtual bool RecvMemoryPressure()
+   { return true; }
+ 
++  virtual bool RecvUpdateCursor(const nsIntPoint&) MOZ_OVERRIDE { return true; }
+ private:
+   void DeferredDestroy();
+ 
+   // There can be many CPCPs, and IPDL-generated code doesn't hold a
+   // reference to top-level actors.  So we hold a reference to
+   // ourself.  This is released (deferred) in ActorDestroy().
+   nsRefPtr<CrossProcessCompositorParent> mSelfRef;
+ };
+diff --git a/gfx/layers/ipc/CompositorParent.h b/gfx/layers/ipc/CompositorParent.h
+--- a/gfx/layers/ipc/CompositorParent.h
++++ b/gfx/layers/ipc/CompositorParent.h
+@@ -66,16 +66,17 @@ public:
+   virtual ~CompositorParent();
+ 
+   virtual bool RecvWillStop() MOZ_OVERRIDE;
+   virtual bool RecvStop() MOZ_OVERRIDE;
+   virtual bool RecvPause() MOZ_OVERRIDE;
+   virtual bool RecvResume() MOZ_OVERRIDE;
+   virtual bool RecvMakeSnapshot(const SurfaceDescriptor& aInSnapshot,
+                                 SurfaceDescriptor* aOutSnapshot);
++  virtual bool RecvUpdateCursor(const nsIntPoint&) MOZ_OVERRIDE;
+ 
+   virtual void ShadowLayersUpdated(ShadowLayersParent* aLayerTree,
+                                    const TargetConfig& aTargetConfig,
+                                    bool isFirstPaint) MOZ_OVERRIDE;
+   void Destroy();
+ 
+   LayerManager* GetLayerManager() { return mLayerManager; }
+ 
+@@ -286,16 +287,17 @@ private:
+ 
+   bool mRenderToEGLSurface;
+   nsIntSize mEGLSurfaceSize;
+ 
+   mozilla::Monitor mPauseCompositionMonitor;
+   mozilla::Monitor mResumeCompositionMonitor;
+ 
+   uint64_t mCompositorID;
++  nsIntPoint mCursor;
+ 
+   bool mOverrideComposeReadiness;
+   CancelableTask* mForceCompositionTask;
+ 
+   DISALLOW_EVIL_CONSTRUCTORS(CompositorParent);
+ };
+ 
+ } // layers
+diff --git a/gfx/layers/ipc/PCompositor.ipdl b/gfx/layers/ipc/PCompositor.ipdl
+--- a/gfx/layers/ipc/PCompositor.ipdl
++++ b/gfx/layers/ipc/PCompositor.ipdl
+@@ -55,12 +55,14 @@ parent:
+     returns (SurfaceDescriptor outSnapshot);
+ 
+   sync PLayers(LayersBackend backendHint, uint64_t id)
+     returns (LayersBackend backend, int32_t maxTextureSize);
+ 
+   // FIXME/bug 783451
+   sync PGrallocBuffer(gfxIntSize size, uint32_t format, uint32_t usage)
+     returns (MaybeMagicGrallocBufferHandle handle);
++
++  async UpdateCursor(nsIntPoint cursor);
+ };
+ 
+ } // layers
+ } // mozilla
+diff --git a/gfx/layers/opengl/LayerManagerOGL.cpp b/gfx/layers/opengl/LayerManagerOGL.cpp
+--- a/gfx/layers/opengl/LayerManagerOGL.cpp
++++ b/gfx/layers/opengl/LayerManagerOGL.cpp
+@@ -384,16 +384,18 @@ LayerManagerOGL::LayerManagerOGL(nsIWidg
+   : mWidget(aWidget)
+   , mWidgetSize(-1, -1)
+   , mSurfaceSize(aSurfaceWidth, aSurfaceHeight)
+   , mBackBufferFBO(0)
+   , mBackBufferTexture(0)
+   , mBackBufferSize(-1, -1)
+   , mHasBGRA(0)
+   , mIsRenderingToEGLSurface(aIsRenderingToEGLSurface)
++  , mPointerX(-1)
++  , mPointerY(-1)
+ #ifdef DEBUG
+   , mMaybeInvalidTree(false)
+ #endif
+ {
+ }
+ 
+ LayerManagerOGL::~LayerManagerOGL()
+ {
+@@ -1139,16 +1141,22 @@ LayerManagerOGL::Render()
+ #endif
+ 
+   if (mTarget) {
+     CopyToTarget(mTarget);
+     mGLContext->fBindBuffer(LOCAL_GL_ARRAY_BUFFER, 0);
+     return;
+   }
+ 
++  if (mPointerX >= 0 && mPointerY >= 0) {
++    mGLContext->fScissor(mPointerX, mPointerY, 3, 3);
++    mGLContext->fClearColor(1, 0, 0, 1);
++    mGLContext->fClear(LOCAL_GL_COLOR_BUFFER_BIT);
++  }
++
+   if (sDrawFPS && !mFPS) {
+     mFPS = new FPSState();
+   } else if (!sDrawFPS && mFPS) {
+     mFPS = nullptr;
+   }
+ 
+   if (mFPS) {
+     mFPS->DrawFPS(TimeStamp::Now(), mGLContext, GetProgram(Copy2DProgramType));
+diff --git a/gfx/layers/opengl/LayerManagerOGL.h b/gfx/layers/opengl/LayerManagerOGL.h
+--- a/gfx/layers/opengl/LayerManagerOGL.h
++++ b/gfx/layers/opengl/LayerManagerOGL.h
+@@ -312,25 +312,26 @@ public:
+    * Calculates the 'completeness' of the rendering that intersected with the
+    * screen on the last render. This is only useful when progressive tile
+    * drawing is enabled, otherwise this will always return 1.0.
+    * This function's expense scales with the size of the layer tree and the
+    * complexity of individual layers' valid regions.
+    */
+   float ComputeRenderIntegrity();
+ 
++  void SetPointerIndicator(int aX, int aY) { mPointerX = aX; mPointerY = aY; }
+ private:
+   /** Widget associated with this layer manager */
+   nsIWidget *mWidget;
+   nsIntSize mWidgetSize;
+ 
+   /** The size of the surface we are rendering to */
+   nsIntSize mSurfaceSize;
+ 
+-  /** 
++  /**
+    * Context target, NULL when drawing directly to our swap chain.
+    */
+   nsRefPtr<gfxContext> mTarget;
+ 
+   nsRefPtr<GLContext> mGLContext;
+ 
+   /** Our more efficient but less powerful alter ego, if one is available. */
+   nsRefPtr<Composer2D> mComposer2D;
+@@ -422,16 +423,18 @@ private:
+   // manager.  True after possibly onscreen layers have had their
+   // cached resources cleared outside of a transaction, and before the
+   // next forwarded transaction that re-validates their buffers.
+   bool mMaybeInvalidTree;
+ #endif
+ 
+   static bool sDrawFPS;
+   static bool sFrameCounter;
++  int mPointerX;
++  int mPointerY;
+ };
+ 
+ enum LayerRenderStateFlags {
+   LAYER_RENDER_STATE_Y_FLIPPED = 1 << 0,
+   LAYER_RENDER_STATE_BUFFER_ROTATION = 1 << 1
+ };
+ 
+ struct LayerRenderState {
+diff --git a/widget/linuxgl/nsWindow.cpp b/widget/linuxgl/nsWindow.cpp
+--- a/widget/linuxgl/nsWindow.cpp
++++ b/widget/linuxgl/nsWindow.cpp
+@@ -13,16 +13,17 @@
+  * limitations under the License.
+  */
+ 
+ #include "mozilla/DebugOnly.h"
+ 
+ #include <fcntl.h>
+ #include <errno.h>
+ 
++#include "mozilla/layers/CompositorChild.h"
+ #include "mozilla/dom/TabParent.h"
+ #include "mozilla/Hal.h"
+ #include "mozilla/Preferences.h"
+ #include "mozilla/FileUtils.h"
+ #include "Framebuffer.h"
+ #include "gfxContext.h"
+ #include "gfxPlatform.h"
+ #include "gfxUtils.h"
+@@ -365,16 +366,20 @@ nsWindow::DispatchInputEvent(nsGUIEvent 
+ {
+     if (aWasCaptured) {
+         *aWasCaptured = false;
+     }
+     if (!gFocusedWindow) {
+         return nsEventStatus_eIgnore;
+     }
+ 
++    if (aEvent.eventStructType == NS_MOUSE_EVENT && gFocusedWindow->mCompositorChild) {
++        gFocusedWindow->mCompositorChild->SendUpdateCursor(aEvent.refPoint);
++    }
++
+     gFocusedWindow->UserActivity();
+ 
+     aEvent.widget = gFocusedWindow;
+ 
+     if (TabParent* capturer = TabParent::GetEventCapturer()) {
+         bool captured = capturer->TryCapture(aEvent);
+         if (aWasCaptured) {
+             *aWasCaptured = captured;
