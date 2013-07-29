@@ -6,7 +6,7 @@ COMPATIBLE_MACHINE = "raspberrypi"
 # to specify the full package name.
 RDEPENDS_${PN} += "userland"
 
-SRCREV = "801ba75ac563"
+SRCREV = "73b69c146ca6"
 
 #PV = "dev"
 #PR = "r1"
