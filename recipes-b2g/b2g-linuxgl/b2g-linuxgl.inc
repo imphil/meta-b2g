@@ -6,7 +6,7 @@ LIC_FILES_CHKSUM = "file://${COMMON_LICENSE_DIR}/MPL-2.0;md5=815ca599c9df247a0c7
 DEPENDS += "alsa-lib curl startup-notification libevent cairo libvpx \
             virtual/egl gnu-config-native virtual/libintl libxt libxi \
             zip-native libidl-native gtk+ bzip2 \
-            gcc-runtime"
+            gcc-runtime dbus dbus-glib python-native"
 RDEPENDS_${PN} +=  "liberation-fonts ttf-dejavu-sans ttf-dejavu-sans-mono"
 
 FILESEXTRAPATHS_prepend := "${FILE_DIRNAME}/b2g-linuxgl:"
