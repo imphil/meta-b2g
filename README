@@ -13,3 +13,17 @@ branch: master
 revision: HEAD
 
 Layer maintainer: Philipp Wagner <mail@philipp-wagner.com>
+
+
+This layer provides everything to build and develop Firefox OS for 
+Raspberry Pi.
+
+- Two recipes to create SD-card images for a complete system with 
+  Firefox OS: a "production" one and one with additional development
+  tools.
+  -> see rpi-b2g-image and rpi-b2g-dev-image
+
+- A SDK containing a cross-toolchain as well as all necessary libraries
+  to build the Mozilla source code.
+  -> see meta-b2g-sdk
+
