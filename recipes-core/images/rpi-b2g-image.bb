@@ -1,7 +1,9 @@
 # Base this image on rpi-basic-image
 include recipes-core/images/rpi-basic-image.bb
 
-IMAGE_INSTALL_append = " b2g-linuxgl-rpi fbset ldd ntp ntp-utils ntpdate tzdata localedef"
+IMAGE_INSTALL_append = " b2g-linuxgl-rpi fbset ntp ntp-utils ntpdate \
+    tzdata localedef linux-firmware \
+    connman connman-tests connman-client iw"
 DEFAULT_TIMEZONE = "Europe/Paris"
 
 IMAGE_LINGUAS = "de-de"
