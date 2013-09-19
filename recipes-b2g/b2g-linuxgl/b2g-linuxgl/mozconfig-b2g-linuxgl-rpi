@@ -4,8 +4,6 @@ ac_add_options --enable-application=b2g
 # build type: optimized release build
 ac_add_options --disable-debug
 ac_add_options --disable-tests
-# -Wno-psabi is required to silcence a GCC warning:
-# "note: the mangling of 'va_list' has changed in GCC 4.4"
 ac_add_options --enable-optimize
 ac_add_options --enable-mobile-optimize
 
@@ -19,9 +17,6 @@ ac_add_options --enable-mobile-optimize
 # WARNING: File '/usr/lib/b2g/libplds4.so' from b2g-linuxgl-rpi was already stripped, this will prevent future debugging!
 ac_add_options --disable-strip
 ac_add_options --disable-install-strip
-
-# install paths
-ac_add_options --prefix=@prefix@
 
 # target system
 ac_add_options --with-arm-kuser
@@ -50,4 +45,7 @@ ac_add_options --disable-crashreporter
 ac_add_options --disable-webrtc
 # not working (gives compile error)
 ac_add_options --disable-elf-hack
-
+# the gamepad HAL requires glib, which we don't provide
+ac_add_options --disable-gamepad
+# gstreamer-0.10 >= 0.10.25 is required
+ac_add_options --disable-gstreamer
