@@ -1,51 +1,32 @@
 # HG changeset patch
-# Date 1359974727 -3600
-# User Philipp Wagner <mail@philipp-wagner.com>
-# Parent 801ba75ac563f243ed653647554c333b8cf34820
-Bug 731498 - LinuxGL port
+# User Arky <hitmanarky@gmail.com>
+# Date 1375141091 -25200
+# Node ID 4d10bc0d794dd1adf8483b122c62084274e1e431
+# Parent  73b69c146ca6926b4a72bb484550e5afe04b93cc
+Patching configure.in for Linuxgl port
 
-diff --git a/configure.in b/configure.in
---- a/configure.in
-+++ b/configure.in
-@@ -4474,29 +4474,31 @@ MOZ_ARG_HEADER(Toolkit Options)
- 	MOZ_ARG_ENABLE_STRING(default-toolkit,
- 	[  --enable-default-toolkit=TK
-                           Select default toolkit
-                           Platform specific defaults:
-                             Mac OS X - cairo-cocoa
-                             OS/2 - cairo-os2
+diff -r 73b69c146ca6 -r 4d10bc0d794d configure.in
+--- a/configure.in	Sat Jul 27 21:52:40 2013 -0400
++++ b/configure.in	Tue Jul 30 06:38:11 2013 +0700
+@@ -4543,6 +4543,7 @@
                              Win32 - cairo-windows
                              * - cairo-gtk2
-+                            * - cairo-linuxgl
+                             * - cairo-gtk3
++			    * - cairo-linuxgl
                              * - cairo-qt],
      [ _DEFAULT_TOOLKIT=$enableval ],
      [ _DEFAULT_TOOLKIT=$_PLATFORM_DEFAULT_TOOLKIT])
- 
-     if test "$_DEFAULT_TOOLKIT" = "cairo-windows" \
-         -o "$_DEFAULT_TOOLKIT" = "cairo-gtk2" \
-         -o "$_DEFAULT_TOOLKIT" = "cairo-gtk2-x11" \
-         -o "$_DEFAULT_TOOLKIT" = "cairo-qt" \
-         -o "$_DEFAULT_TOOLKIT" = "cairo-os2" \
+@@ -4556,7 +4557,8 @@
          -o "$_DEFAULT_TOOLKIT" = "cairo-cocoa" \
          -o "$_DEFAULT_TOOLKIT" = "cairo-uikit" \
          -o "$_DEFAULT_TOOLKIT" = "cairo-android" \
 -        -o "$_DEFAULT_TOOLKIT" = "cairo-gonk"
-+        -o "$_DEFAULT_TOOLKIT" = "cairo-gonk" \
-+        -o "$_DEFAULT_TOOLKIT" = "cairo-linuxgl"
++        -o "$_DEFAULT_TOOLKIT" = "cairo-gonk" \	
++	-o "$_DEFAULT_TOOLKIT" = "cairo-linuxgl"
      then
          dnl nglayout only supports building with one toolkit,
          dnl so ignore everything after the first comma (",").
-         MOZ_WIDGET_TOOLKIT=`echo "$_DEFAULT_TOOLKIT" | sed -e "s/,.*$//"`
-     else
-         AC_MSG_ERROR([You must specify a default toolkit (perhaps $_PLATFORM_DEFAULT_TOOLKIT).])
-     fi
- 
-@@ -4614,16 +4616,26 @@ cairo-gonk)
-     MOZ_WIDGET_TOOLKIT=gonk
-     TK_CFLAGS='$(MOZ_CAIRO_CFLAGS) $(MOZ_PIXMAN_CFLAGS)'
-     TK_LIBS='$(MOZ_CAIRO_LIBS) $(MOZ_PIXMAN_LIBS)'
-     MOZ_WEBGL=1
-     MOZ_PDF_PRINTING=1
+@@ -4708,6 +4710,16 @@
      MOZ_TOUCH=1
      ;;
  
@@ -61,28 +42,13 @@ diff --git a/configure.in b/configure.in
 +
  esac
  
- AC_SUBST(MOZ_OLD_LINKER)
  AC_SUBST(MOZ_PDF_PRINTING)
- if test "$MOZ_PDF_PRINTING"; then
-    PDF_SURFACE_FEATURE="#define CAIRO_HAS_PDF_SURFACE 1"
-    AC_DEFINE(MOZ_PDF_PRINTING)
- fi
-@@ -4895,17 +4907,17 @@ dnl ====================================
- MOZ_ARG_DISABLE_BOOL(pango,
- [  --disable-pango         Disable usage of Pango ],
-     MOZ_PANGO=,
-     MOZ_PANGO=1)
- 
+@@ -5024,7 +5036,7 @@
  dnl ========================================================
  dnl = Pango
  dnl ========================================================
--if test "$MOZ_ENABLE_GTK2" -o "$MOZ_ENABLE_QT"
-+if test "$MOZ_ENABLE_GTK2" -o "$MOZ_ENABLE_QT" -o "${MOZ_WIDGET_TOOLKIT}" = "linuxgl"
+-if test "$MOZ_ENABLE_GTK" -o "$MOZ_ENABLE_QT"
++if test "$MOZ_ENABLE_GTK" -o "$MOZ_ENABLE_QT" -o "${MOZ_WIDGET_TOOLKIT}" = "linuxgl"
  then
      AC_SUBST(MOZ_PANGO)
  
-     if test "$MOZ_PANGO"
-     then
-         PKG_CHECK_MODULES(_PANGOCHK, pango >= $PANGO_VERSION)
- 
-         PKG_CHECK_MODULES(MOZ_PANGO, pango >= $PANGO_VERSION pangoft2 >= $PANGO_VERSION pangocairo >= $PANGO_VERSION)
